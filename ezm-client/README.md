@@ -316,13 +316,12 @@ VMess JSON 也接受正文中与所选传输匹配的标量参数。
 bash <(curl -fsSL https://raw.githubusercontent.com/NULL-SF/ez-mihomo/main/install.sh)
 ```
 
-选择 `2`（客户端），安装到当前目录的 `ezm-client/`，不自动启动；已有目录不会覆盖。需要 curl、tar、gzip 和 CA 证书，组件齐全时无需 sudo。进入安装目录后按本文配置节点并启动。
+选择 `2`（客户端），安装到当前目录的 `ezm-client/`，不自动启动。已有目录时停止安装，避免覆盖节点配置和凭据。
 
-依赖已具备时，项目运行和注册用户开机任务不需要 `sudo`。把本目录整体复制到目标机器的任意可写位置，并进入该目录。脚本按自己所在目录找配置，不依赖系统里的 `mihomo` 命令。本项目仅支持 **Linux x86_64**。复制后执行（路径按实际位置修改）：
+本项目仅支持 **Linux x86_64**。下载后进入目录：
 
 ```bash
-cd /path/to/ezm-client
-chmod u+x ./client.sh ./scripts/client-service.sh ./bin/mihomo_1.19.33
+cd ezm-client
 ```
 
 使用 ProxyChains 终端接入时，项目路径不能包含空白或冒号；单独使用 HTTP / SOCKS 入口不受此限制。
