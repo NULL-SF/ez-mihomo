@@ -3,8 +3,7 @@
 import argparse
 import configparser
 from contextlib import contextmanager
-from datetime import datetime, timezone
-from email.utils import parsedate_to_datetime
+from datetime import datetime
 import fcntl
 import ipaddress
 import hashlib
@@ -34,6 +33,7 @@ LEGACY_RETRY_MARK = ' # ezm-server-certificate-retry'
 RENEW_BEFORE = 48 * 3600
 CERTBOT_VERSION = '5.9.0'
 SIGN_TIMEOUT = 300
+REAPPLY_COOLDOWN = 59 * 60
 
 
 def run(args, **kwargs):
@@ -438,30 +438,7 @@ def schedule_retry(error=None, announce=True):
     if not (HOME / 'apply.on').is_file():
         return False
     # Hourly checks and repeated starts obey this persisted deadline.
-    deadline = time.time() + 3600
-    detail = '\n'.join(str(value) for value in (error, getattr(error, 'stdout', ''), getattr(error, 'stderr', '')) if value)
-    match = re.search(r'retry after\s+(\d{4}-\d\d-\d\d[ T]\d\d:\d\d:\d\d)(?:Z|\s+UTC)', detail, re.I)
-    if match:
-        try:
-            requested = datetime.strptime(match[1].replace('T', ' '), '%Y-%m-%d %H:%M:%S').replace(tzinfo=timezone.utc).timestamp()
-            deadline = max(deadline, requested)
-        except ValueError:
-            pass
-    header = re.search(r'retry-after:\s*([^\r\n]+)', detail, re.I)
-    if header:
-        value = header[1].strip()
-        try:
-            requested = time.time() + int(value) if value.isdecimal() else parsedate_to_datetime(value).timestamp()
-            deadline = max(deadline, requested)
-        except (ValueError, TypeError, OverflowError):
-            pass
-    if not math.isfinite(deadline):
-        deadline = time.time() + 3600
-    deadline = math.ceil(deadline / 60) * 60
-    try:
-        datetime.fromtimestamp(deadline)
-    except (OverflowError, OSError, ValueError):
-        deadline = math.ceil((time.time() + 3600) / 60) * 60
+    deadline = time.time() + REAPPLY_COOLDOWN
     write_retry_at(deadline)
     scheduled = set_check_schedule()
     if scheduled and announce:
@@ -586,7 +563,7 @@ def check_certificate(requested=None):
         print('下次允许申请证书的时间：' + str(datetime.fromtimestamp(deadline)), flush=True)
         return
     try:
-        # Persist a one-hour guard before contacting the CA, including on crashes.
+        # Persist the cooldown before contacting the CA, including on crashes.
         if not schedule_retry(announce=False) or not (HOME / 'apply.on').is_file():
             return
         if not source_valid or not managed:
@@ -599,7 +576,7 @@ def check_certificate(requested=None):
     except (OSError, ValueError, subprocess.SubprocessError) as error:
         schedule_retry(error)
         raise
-    # Keep an hour of cooldown after a successful request as well.
+    # Keep the same cooldown after a successful request as well.
     schedule_retry(announce=False)
 
 
