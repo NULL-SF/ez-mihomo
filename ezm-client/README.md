@@ -316,7 +316,7 @@ VMess JSON 也接受正文中与所选传输匹配的标量参数。
 bash <(curl -fsSL https://raw.githubusercontent.com/NULL-SF/ez-mihomo/main/install.sh)
 ```
 
-选择 `2`（客户端），安装到当前目录的 `ezm-client/`，不自动启动。
+选择 `2`（客户端），安装到当前目录的 `ezm-client/`。注意确保目录完整路径无空格，防止 ProxyChains 工具失效。
 
 下载后进入目录：
 
@@ -324,7 +324,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/NULL-SF/ez-mihomo/main/insta
 cd ezm-client
 ```
 
-在新服务器上，至少填好 `config/active.txt` 指定线路的链接；其他线路的链接可稍后再填。确认 `config/port.txt` 后，先启动代理：
+使用时至少填好 `config/active.txt` 指定线路的链接；其他线路的链接可稍后再填。确认 `config/port.txt` 后，先启动代理：
 
 ```bash
 bash ./client.sh start
