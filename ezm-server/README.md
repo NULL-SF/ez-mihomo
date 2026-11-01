@@ -138,19 +138,33 @@ UUID、密码和混淆密码自动生成，启停不更换凭据。链接遵循�
 
 本目录可独立运行，不需要仓库根目录或客户端目录。需要 Linux x86_64、Bash、可用的软件源和出网能力。运行依赖包括 Python 3.10+、venv、OpenSSL、CA 证书、curl、flock 和 cron，首次 `start` 会检查并自动补齐缺少的组件。
 
-下载项目可使用 Git。若还没有下载工具，可先按系统执行：
+首次安装可在 root 用户下执行，无需 Git：
 
 ```bash
-# Debian / Ubuntu
-sudo apt-get update
-sudo apt-get install -y git curl ca-certificates
+bash <(curl -fsSL https://raw.githubusercontent.com/NULL-SF/ez-mihomo/main/install.sh)
+```
 
-# Fedora / RHEL 系
-sudo dnf install -y git curl ca-certificates
+脚本只将完整项目下载到当前目录的 `ez-mihomo/`，不启动服务。已有安装目录时不会覆盖；也可在脚本后传入其他安装目录。下载后手动启动：
+
+```bash
+cd ez-mihomo/ezm-server
+bash ./server.sh start
+```
+
+若尚未安装 curl 或 CA 证书，先按系统安装下载工具：
+
+```bash
+# Debian / Ubuntu（root 用户）
+apt-get update && apt-get install -y curl ca-certificates
+
+# Fedora / RHEL 系（root 用户）
+dnf install -y curl ca-certificates
 # 使用 yum 的系统将 dnf 换成 yum
 ```
 
-首次从 GitHub 下载并启动：
+非 root 用户可先通过 `sudo -i` 切换到 root。安装入口会检查并补齐 tar、gzip 等下载组件，运行依赖仍由 `start` 自动准备。
+
+也可以使用 Git 下载：
 
 ```bash
 git clone --depth 1 https://github.com/NULL-SF/ez-mihomo.git
