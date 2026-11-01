@@ -144,7 +144,7 @@ UUID、密码和混淆密码自动生成，启停不更换凭据。链接遵循�
 bash <(curl -fsSL https://raw.githubusercontent.com/NULL-SF/ez-mihomo/main/install.sh)
 ```
 
-运行后选择 `1`（服务端），将独立项目下载到当前目录的 `ezm-server/`，不启动服务。已有安装目录时不会覆盖；也可在脚本后传入其他安装目录。下载后手动启动：
+运行后选择 `1`（服务端），将独立项目下载到当前目录的 `ezm-server/`，不启动服务。已有安装目录会更新程序和文档，保留配置及运行数据；也可在脚本后传入其他安装目录。下载后手动启动：
 
 ```bash
 cd ezm-server

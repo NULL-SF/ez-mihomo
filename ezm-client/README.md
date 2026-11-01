@@ -316,9 +316,9 @@ VMess JSON 也接受正文中与所选传输匹配的标量参数。
 bash <(curl -fsSL https://raw.githubusercontent.com/NULL-SF/ez-mihomo/main/install.sh)
 ```
 
-选择 `2`（客户端），安装到当前目录的 `ezm-client/`，不自动启动。已有目录时停止安装，避免覆盖节点配置和凭据。
+选择 `2`（客户端），安装到当前目录的 `ezm-client/`，不自动启动。已有目录会更新程序和文档，保留配置及运行数据。
 
-本项目仅支持 **Linux x86_64**。下载后进入目录：
+下载后进入目录：
 
 ```bash
 cd ezm-client

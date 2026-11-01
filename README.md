@@ -13,4 +13,4 @@
 bash <(curl -fsSL https://raw.githubusercontent.com/NULL-SF/ez-mihomo/main/install.sh)
 ```
 
-运行后选择服务端或客户端，分别安装到当前目录的 `ezm-server/` 或 `ezm-client/`，不自动启动。已有目录不会覆盖；也可在命令末尾指定安装目录。
+运行后选择服务端或客户端，分别安装到当前目录的 `ezm-server/` 或 `ezm-client/`，不自动启动。已有目录会更新程序和文档，保留配置及运行数据；也可在命令末尾指定安装目录。

@@ -22,11 +22,9 @@ while true; do
 done
 
 target="${1:-$PWD/$project}"
-[[ ! -e "$target" && ! -L "$target" ]] || {
-  echo "安装目录已存在，不覆盖已有文件：$target" >&2
-  printf '如需启动已有项目，请进入该目录执行 bash ./%s start。\n' "$entry" >&2
-  exit 1
-}
+if [[ -L "$target" || ( -e "$target" && ! -d "$target" ) ]]; then
+  echo "安装路径必须是目录：$target" >&2; exit 1
+fi
 
 packages=()
 for tool in curl tar gzip; do
@@ -65,10 +63,27 @@ tar -xzf "$work/project.tar.gz" -C "$work/project" --strip-components=2 --no-sam
 [[ -f "$work/project/$entry" && -x "$work/project/bin/mihomo_1.19.33" && -f "$work/project/bin/LICENSE.mihomo" ]] || {
   echo '下载内容不完整，未安装。' >&2; exit 1;
 }
-# Preserve an existing directory even if another installation created it meanwhile.
-mv -T -n -- "$work/project" "$target"
-[[ ! -e "$work/project" ]] || {
-  echo "安装目录已存在，未覆盖：$target" >&2; exit 1;
-}
+# Replace each program file by rename, including a core that is currently running.
+# Existing configuration is preserved; missing default ports are installed.
+mkdir -p -- "$target"
+while IFS= read -r -d '' source_file; do
+  relative="${source_file#"$work/project/"}"
+  destination="$target/$relative"
+  directory="$(dirname -- "$destination")"
+  check="$directory"
+  while [[ "$check" != "$parent" && "$check" != / ]]; do
+    [[ ! -L "$check" ]] || { echo "安装目录中存在符号链接：$check" >&2; exit 1; }
+    check="$(dirname -- "$check")"
+  done
+  if [[ "$relative" == config/* && ( -e "$destination" || -L "$destination" ) ]]; then
+    continue
+  fi
+  mkdir -p -- "$directory"
+  temporary="$(mktemp "$directory/.ezm-install.XXXXXXXX")"
+  if ! cp -p -- "$source_file" "$temporary" || ! mv -fT -- "$temporary" "$destination"; then
+    rm -f -- "$temporary"
+    echo "更新失败：$destination" >&2; exit 1
+  fi
+done < <(find "$work/project" -type f -print0)
 printf '下载完成：%s\n' "$target"
 printf '使用方法见：%s/README.md\n' "$target"
