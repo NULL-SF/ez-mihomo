@@ -9,6 +9,7 @@ import fcntl
 import ipaddress
 import hashlib
 import json
+import math
 import os
 import pwd
 from pathlib import Path
@@ -29,9 +30,10 @@ HOME = ROOT / 'runtime/certs'
 CONFIG = HOME / 'config'
 LIVE = CONFIG / 'live/ezm-node'
 MARK = ' # ezm-server-certificate-renew'
-RETRY_MARK = ' # ezm-server-certificate-retry'
+LEGACY_RETRY_MARK = ' # ezm-server-certificate-retry'
 RENEW_BEFORE = 48 * 3600
 CERTBOT_VERSION = '5.9.0'
+SIGN_TIMEOUT = 300
 
 
 def run(args, **kwargs):
@@ -44,8 +46,55 @@ def cron_lock():
     directory = Path(pwd.getpwuid(os.geteuid()).pw_dir)
     fd = os.open(directory, os.O_RDONLY)
     try:
-        fcntl.flock(fd, fcntl.LOCK_EX)
+        deadline = time.monotonic() + 30
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise ValueError('其他定时任务设置尚未结束，未修改 crontab')
+                time.sleep(0.05)
         yield
+    finally:
+        os.close(fd)
+
+
+@contextmanager
+def certificate_lock(nonblocking=False):
+    # The project inode stays stable even if the certificate directory is removed.
+    fd = os.open(ROOT, os.O_RDONLY)
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | (fcntl.LOCK_NB if nonblocking else 0))
+        except BlockingIOError:
+            yield None
+            return
+        HOME.mkdir(mode=0o700, parents=True, exist_ok=True)
+        previous_lock = HOME / 'renew.lock'
+        current_lock = HOME / 'reapply.lock'
+        if previous_lock.is_file() and not current_lock.exists():
+            previous_lock.rename(current_lock)
+        with current_lock.open('a+') as lock:
+            os.chmod(lock.name, 0o600)
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | (fcntl.LOCK_NB if nonblocking else 0))
+            except BlockingIOError:
+                yield None
+                return
+            # Preserve cooldown from earlier layouts before removing old state.
+            for previous in (previous_lock, HOME / 'retry-at'):
+                if not previous.is_file():
+                    continue
+                try:
+                    deadline = float(previous.read_text())
+                    datetime.fromtimestamp(deadline)
+                    if math.isfinite(deadline) and deadline > retry_at():
+                        write_retry_at(deadline)
+                except (ValueError, OverflowError):
+                    pass
+                previous.unlink()
+            yield lock
     finally:
         os.close(fd)
 
@@ -150,7 +199,7 @@ def tool():
         try:
             env = dict(os.environ, PYTHONPATH=str(bootstrap))
             run([venv / 'bin/python', '-m', 'pip', 'install', '--index-url', 'https://pypi.org/simple',
-                 '--disable-pip-version-check', 'pip==25.3', 'certbot==' + CERTBOT_VERSION], env=env)
+                 '--disable-pip-version-check', 'pip==25.3', 'certbot==' + CERTBOT_VERSION], env=env, timeout=600)
         finally:
             bootstrap.unlink(missing_ok=True)
     return [str(venv / 'bin/python'), str(binary)]
@@ -164,8 +213,8 @@ def environment():
     return env
 
 
-def base(binary):
-    return [*binary, '--config-dir', str(CONFIG), '--work-dir', str(HOME / 'work'),
+def base(binary, config_dir=None):
+    return [*binary, '--config-dir', str(config_dir or CONFIG), '--work-dir', str(HOME / 'work'),
             '--logs-dir', str(ROOT / 'log/certs'), '--non-interactive']
 
 
@@ -182,26 +231,36 @@ def verify_source():
     print('原始证书及私钥已校验；核心直接读取并热加载。', flush=True)
 
 
-def schedule():
-    if not (CONFIG / 'renewal/ezm-node.conf').is_file():
-        raise ValueError('没有本项目的自动证书配置，请先执行 start。')
-    ensure_cron()
+def set_check_schedule():
+    (ROOT / 'log/certs').mkdir(mode=0o700, parents=True, exist_ok=True)
+    command = ' '.join(shlex.quote(str(x)) for x in (sys.executable, ROOT / 'scripts/certificate.py', 'renew'))
+    interval = '0 * * * *'
+    line = interval + ' umask 027; ' + command + ' >> ' + shlex.quote(str(ROOT / 'log/certs/renewal.log')) + ' 2>&1' + MARK
+    if '\n' in str(ROOT) or '\r' in str(ROOT):
+        raise ValueError('项目路径含换行符，无法设置续期任务')
+    line = line.replace('%', r'\%')
     with cron_lock():
+        if not (HOME / 'apply.on').is_file():
+            return False
         current = cron_read()
-        command = ' '.join(shlex.quote(str(x)) for x in (sys.executable, ROOT / 'scripts/certificate.py', 'renew'))
-        now = datetime.now()
-        line = f'{now.minute} {now.hour} * * * umask 027; ' + command + ' >> ' + shlex.quote(str(ROOT / 'log/certs/renewal.log')) + ' 2>&1' + MARK
-        if '\n' in str(ROOT) or '\r' in str(ROOT):
-            raise ValueError('项目路径含换行符，无法设置续期任务。')
-        line = line.replace('%', r'\%')
-        others = [x for x in current.splitlines() if not x.endswith(MARK)]
+        others = [x for x in current.splitlines() if not x.endswith((MARK, LEGACY_RETRY_MARK))]
         updated = '\n'.join([*others, line]) + '\n'
         if updated != current:
             run(['crontab', '-'], input=updated, text=True)
-    print('已按本次启动时间重排续期检查，下一次约 24 小时后，之后每天检查。', flush=True)
+    return True
 
 
-def issue(identifier, email):
+def schedule():
+    ensure_cron()
+    if not set_check_schedule():
+        print('证书检查已暂停，未登记任务。', flush=True)
+        return
+    print('已确保每小时整点检查；已有相同任务保持不变。', flush=True)
+
+
+def issue(identifier, email, config_dir=None):
+    if not (HOME / 'apply.on').is_file():
+        raise InterruptedError('证书申请未启用')
     HOME.mkdir(mode=0o700, parents=True, exist_ok=True)
     (ROOT / 'log/certs').mkdir(mode=0o700, parents=True, exist_ok=True)
     ensure_cron()  # Prepare the scheduler before issuing a short-lived certificate.
@@ -228,9 +287,20 @@ def issue(identifier, email):
         probe.close()
     binary = tool()
     contact = ['--email', email] if email else ['--register-unsafely-without-email']
-    run(base(binary) + ['certonly', '--standalone', '--preferred-profile', 'shortlived',
-                       '--cert-name', 'ezm-node', '--agree-tos', '--reuse-key', *contact, *identity], env=environment())
-    verify_source()
+    if not (HOME / 'apply.on').is_file():
+        raise InterruptedError('证书申请已停止')
+    result = run(base(binary, config_dir) + ['certonly', '--standalone', '--preferred-profile', 'shortlived',
+                       '--cert-name', 'ezm-node', '--agree-tos', '--reuse-key', *contact, *identity],
+                 env=environment(), timeout=SIGN_TIMEOUT, capture_output=True, text=True)
+    if result.stdout:
+        print(result.stdout, end='', flush=True)
+    if result.stderr:
+        print(result.stderr, end='', file=sys.stderr, flush=True)
+    if config_dir is None:
+        verify_source()
+    else:
+        staged_live = Path(config_dir) / 'live/ezm-node'
+        validate(staged_live / 'fullchain.pem', staged_live / 'privkey.pem')
     print('受信任证书申请成功。', flush=True)
 
 
@@ -243,33 +313,69 @@ def process_tick(pid):
         return None
 
 
+def renewal_group_active(group):
+    command = str(ROOT / 'scripts/certificate.py').encode()
+    prefix = (str(HOME) + os.sep).encode()
+    for process in Path('/proc').glob('[0-9]*'):
+        try:
+            text = (process / 'stat').read_text()
+            fields = text[text.rfind(')') + 2:].split()
+            if fields[0] == 'Z' or int(fields[2]) != group:
+                continue
+            argv = (process / 'cmdline').read_bytes().split(b'\0')
+            if command in argv or any(arg.startswith(prefix) for arg in argv):
+                return True
+        except (OSError, ValueError, IndexError):
+            continue
+    return False
+
+
 def pause():
-    if not HOME.exists():
-        return
-    marker = HOME / 'paused'
-    marker.touch(mode=0o600)
+    HOME.mkdir(mode=0o700, parents=True, exist_ok=True)
+    (HOME / 'apply.on').unlink(missing_ok=True)
+    (HOME / 'paused').unlink(missing_ok=True)
     error = None
-    # The renewal worker owns a separate session, so its Certbot children stop too.
-    try:
-        record = json.loads((HOME / 'renew.lock').read_text())
-        pid, tick = int(record['pid']), record['start']
-        argv = Path(f'/proc/{pid}/cmdline').read_bytes().split(b'\0')
-        expected = [str(ROOT / 'scripts/certificate.py').encode(), b'renew']
-        if process_tick(pid) == tick and argv[1:3] == expected and os.getpgid(pid) == pid:
+    # Validate the exact project command and session, even if its PID record was lost.
+    workers = {}
+    for process in Path('/proc').glob('[0-9]*'):
+        try:
+            argv = (process / 'cmdline').read_bytes().split(b'\0')
+            command = str(ROOT / 'scripts/certificate.py').encode()
+            if command not in argv:
+                continue
+            index = argv.index(command)
+            if argv[index:] != [command, b'renew', b'']:
+                continue
+            pid = int(process.name)
+            tick = process_tick(pid)
+            if pid != os.getpid() and tick and os.getpgid(pid) == pid:
+                workers[pid] = tick
+        except (OSError, ValueError):
+            continue
+    for pid, tick in workers.items():
+        try:
+            if process_tick(pid) != tick or os.getpgid(pid) != pid:
+                continue
             os.killpg(pid, signal.SIGTERM)
             for _ in range(50):
-                if process_tick(pid) != tick:
+                if not renewal_group_active(pid):
                     break
-                time.sleep(.1)
-            if process_tick(pid) == tick:
+                time.sleep(0.1)
+            if renewal_group_active(pid):
                 os.killpg(pid, signal.SIGKILL)
-    except (OSError, ValueError, KeyError, TypeError):
-        pass
+                for _ in range(20):
+                    if not renewal_group_active(pid):
+                        break
+                    time.sleep(0.1)
+                if renewal_group_active(pid):
+                    error = ValueError('续期进程仍未退出，请检查系统进程状态')
+        except ProcessLookupError:
+            pass
     with cron_lock():
         if shutil.which('crontab'):
             try:
                 current = cron_read()
-                kept = [line for line in current.splitlines() if not line.endswith((MARK, RETRY_MARK))]
+                kept = [line for line in current.splitlines() if not line.endswith((MARK, LEGACY_RETRY_MARK))]
                 if len(kept) != len(current.splitlines()):
                     if kept:
                         run(['crontab', '-'], input='\n'.join(kept) + '\n', text=True)
@@ -277,16 +383,17 @@ def pause():
                         run(['crontab', '-r'])
             except (OSError, ValueError, subprocess.SubprocessError) as failure:
                 error = failure
-    (HOME / 'retry-at').unlink(missing_ok=True)
     print('自动续期已暂停，当前证书和节点凭据保留。', flush=True)
     if error:
-        raise ValueError('续期已暂停，但删除 cron 登记失败：' + str(error))
+        raise ValueError('证书检查已暂停，但未完全停止：' + str(error))
 
 
 def renew():
     binary = tool()
+    if not (HOME / 'apply.on').is_file():
+        raise InterruptedError('证书申请已停止')
     run(base(binary) + ['renew', '--cert-name', 'ezm-node', '--reuse-key', '--force-renewal', '--quiet'],
-        env=environment(), capture_output=True, text=True)
+        env=environment(), capture_output=True, text=True, timeout=SIGN_TIMEOUT)
     verify_source()
 
 
@@ -302,29 +409,36 @@ def ready(cert, key, seconds=RENEW_BEFORE):
 
 def retry_at():
     try:
-        return float((HOME / 'retry-at').read_text())
-    except (OSError, ValueError):
+        state = HOME / 'reapply.lock'
+        if not state.is_file():
+            return 0
+        value = float(state.read_text())
+        if not math.isfinite(value) or value < 0:
+            return 0
+        datetime.fromtimestamp(value)
+        return value
+    except (OSError, ValueError, OverflowError):
         return 0
 
 
-def clear_retry():
-    with cron_lock():
-        if shutil.which('crontab'):
-            current = cron_read()
-            kept = [line for line in current.splitlines() if not line.endswith(RETRY_MARK)]
-            if len(kept) != len(current.splitlines()):
-                if kept:
-                    run(['crontab', '-'], input='\n'.join(kept) + '\n', text=True)
-                else:
-                    run(['crontab', '-r'])
-    (HOME / 'retry-at').unlink(missing_ok=True)
+def write_retry_at(deadline):
+    # Caller holds certificate_lock. Never replace/unlink the locked inode.
+    with (HOME / 'reapply.lock').open('r+') as state:
+        state.write(str(deadline) + '\n')
+        state.truncate()
+        state.flush()
+        os.fsync(state.fileno())
 
 
-def schedule_retry(error):
-    if (HOME / 'paused').exists():
-        return
-    # Align to a cron minute; daily checks and repeated starts obey this deadline.
-    deadline = (int(time.time()) // 60 + 60) * 60
+def finish_check():
+    set_check_schedule()
+
+
+def schedule_retry(error=None, announce=True):
+    if not (HOME / 'apply.on').is_file():
+        return False
+    # Hourly checks and repeated starts obey this persisted deadline.
+    deadline = time.time() + 3600
     detail = '\n'.join(str(value) for value in (error, getattr(error, 'stdout', ''), getattr(error, 'stderr', '')) if value)
     match = re.search(r'retry after\s+(\d{4}-\d\d-\d\d[ T]\d\d:\d\d:\d\d)(?:Z|\s+UTC)', detail, re.I)
     if match:
@@ -341,22 +455,20 @@ def schedule_retry(error):
             deadline = max(deadline, requested)
         except (ValueError, TypeError, OverflowError):
             pass
-    state = HOME / 'retry-at'
-    staged = state.with_suffix('.tmp')
-    staged.write_text(str(deadline))
-    staged.chmod(0o600)
-    staged.replace(state)
-    with cron_lock():
-        current = cron_read()
-        command = ' '.join(shlex.quote(str(x)) for x in (sys.executable, ROOT / 'scripts/certificate.py', 'renew'))
-        minute = datetime.fromtimestamp(deadline).minute
-        line = f'{minute} * * * * umask 027; ' + command + ' >> ' + shlex.quote(str(ROOT / 'log/certs/renewal.log')) + ' 2>&1' + RETRY_MARK
-        line = line.replace('%', r'\%')
-        kept = [entry for entry in current.splitlines() if not entry.endswith(RETRY_MARK)]
-        run(['crontab', '-'], input='\n'.join([*kept, line]) + '\n', text=True)
-    print('续期失败，已安排约 1 小时后重试；证书机构要求更晚时按其时间等待。', file=sys.stderr, flush=True)
-    if getattr(error, 'stderr', None):
-        print(error.stderr.strip(), file=sys.stderr)
+    if not math.isfinite(deadline):
+        deadline = time.time() + 3600
+    deadline = math.ceil(deadline / 60) * 60
+    try:
+        datetime.fromtimestamp(deadline)
+    except (OverflowError, OSError, ValueError):
+        deadline = math.ceil((time.time() + 3600) / 60) * 60
+    write_retry_at(deadline)
+    scheduled = set_check_schedule()
+    if scheduled and announce:
+        print('申请失败，保留每小时整点检查；达到重试时间后再申请。', file=sys.stderr, flush=True)
+        if getattr(error, 'stderr', None):
+            print(error.stderr.strip(), file=sys.stderr)
+    return scheduled
 
 
 def identifier():
@@ -374,48 +486,83 @@ def identifier():
     if len(values) == 1:
         return values.pop()
     if not values:
-        result = subprocess.run(['openssl', 'x509', '-in', str(LIVE / 'fullchain.pem'), '-noout', '-ext', 'subjectAltName'],
-                                capture_output=True, text=True, check=True)
-        match = re.search(r'(?:IP Address:|DNS:)([^,\s]+)', result.stdout)
-        if match:
-            return match.group(1)
+        try:
+            result = subprocess.run(['openssl', 'x509', '-in', str(LIVE / 'fullchain.pem'), '-noout', '-ext', 'subjectAltName'],
+                                    capture_output=True, text=True, check=True)
+            match = re.search(r'(?:IP Address:|DNS:)([^,\s]+)', result.stdout)
+            if match:
+                return match.group(1)
+        except (OSError, subprocess.SubprocessError):
+            from configure import detect_server
+            return detect_server()
     raise ValueError('无法确定唯一节点地址，未重新申请证书')
 
 
-def reissue(name):
-    # A caller holds renew.lock. Keep the previous data until signing succeeds.
-    HOME.mkdir(mode=0o700, parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix='.reissue-', dir=HOME) as folder:
-        backup = Path(folder) / 'config'
-        if CONFIG.exists():
-            CONFIG.rename(backup)
-        try:
-            issue(name, '')
-        except BaseException:
-            if CONFIG.exists():
-                shutil.rmtree(CONFIG)
-            if backup.exists():
+def recover_pending_reissue():
+    # A process may die between the two directory renames. Restore old material.
+    for folder in HOME.glob('.reissue-*'):
+        if not folder.is_dir() or folder.is_symlink():
+            continue
+        backup = folder / 'previous'
+        if not backup.exists():
+            backup = folder / 'config'  # Older interrupted transaction layout.
+        if backup.is_dir():
+            if not ready(LIVE / 'fullchain.pem', LIVE / 'privkey.pem', 0) or not valid_renewal_config():
+                if CONFIG.exists():
+                    shutil.rmtree(CONFIG)
                 backup.rename(CONFIG)
+        shutil.rmtree(folder)
+
+
+def reissue(name):
+    # Sign in isolation; keep the current files available during the network request.
+    HOME.mkdir(mode=0o700, parents=True, exist_ok=True)
+    recover_pending_reissue()
+    with tempfile.TemporaryDirectory(prefix='.reissue-', dir=HOME) as folder:
+        candidate = Path(folder) / 'candidate'
+        previous = Path(folder) / 'previous'
+        issue(name, '', config_dir=candidate)
+        if not (HOME / 'apply.on').is_file():
+            raise InterruptedError('证书检查已暂停，未切换新证书')
+        for path in (candidate / 'renewal').glob('*.conf'):
+            path.write_text(path.read_text().replace(str(candidate), str(CONFIG)))
+        if CONFIG.exists():
+            CONFIG.rename(previous)
+        try:
+            candidate.rename(CONFIG)
+        except BaseException:
+            if previous.exists():
+                previous.rename(CONFIG)
             raise
 
 
 def valid_renewal_config():
     try:
+        path = CONFIG / 'renewal/ezm-node.conf'
+        if not path.is_file():
+            return False
         parser = configparser.RawConfigParser(strict=False)
-        parser.read_string('[certificate]\n' + (CONFIG / 'renewal/ezm-node.conf').read_text())
+        parser.read_string('[certificate]\n' + path.read_text())
         return parser.get('renewalparams', 'authenticator', fallback='') == 'standalone'
     except (OSError, configparser.Error, UnicodeError):
         return False
 
 
-def check_certificate():
+def enable_application():
+    (HOME / 'paused').unlink(missing_ok=True)
+    (HOME / 'apply.on').touch(mode=0o600)
+
+
+def check_certificate(requested=None):
+    if not (HOME / 'apply.on').is_file():
+        return
     source_valid = ready(LIVE / 'fullchain.pem', LIVE / 'privkey.pem', 0)
     managed = valid_renewal_config()
     if source_valid:
         if ready(LIVE / 'fullchain.pem', LIVE / 'privkey.pem', 3600):
             verify_source()
         if managed and ready(LIVE / 'fullchain.pem', LIVE / 'privkey.pem'):
-            clear_retry()
+            finish_check()
             print('原始证书剩余超过 48 小时，无需申请。', flush=True)
             return
     deadline = retry_at()
@@ -423,9 +570,12 @@ def check_certificate():
         print('尚未到续期重试时间：' + str(datetime.fromtimestamp(deadline)), flush=True)
         return
     try:
+        # Persist a one-hour guard before contacting the CA, including on crashes.
+        if not schedule_retry(announce=False) or not (HOME / 'apply.on').is_file():
+            return
         if not source_valid or not managed:
             print('原始证书或续期资料缺失、无效，重新申请证书；不更换节点凭据。', flush=True)
-            reissue(identifier())
+            reissue(requested or identifier())
         else:
             renew()
         if not ready(LIVE / 'fullchain.pem', LIVE / 'privkey.pem'):
@@ -433,7 +583,8 @@ def check_certificate():
     except (OSError, ValueError, subprocess.SubprocessError) as error:
         schedule_retry(error)
         raise
-    clear_retry()
+    # Keep an hour of cooldown after a successful request as well.
+    schedule_retry(announce=False)
 
 
 def main():
@@ -450,46 +601,47 @@ def main():
     if args.action == 'pause':
         pause()
         return
-    marker = HOME / 'paused'
-    if args.action == 'renew' and marker.exists():
+    marker = HOME / 'apply.on'
+    if args.action == 'renew' and not marker.is_file():
         return
     if args.action == 'resume' and not (CONFIG / 'renewal/ezm-node.conf').is_file():
         return  # Existing externally managed certificates remain externally managed.
     HOME.mkdir(mode=0o700, parents=True, exist_ok=True)
     (ROOT / 'log/certs').mkdir(mode=0o700, parents=True, exist_ok=True)
-    with (HOME / 'renew.lock').open('a+') as lock:
-        os.chmod(lock.name, 0o600)
-        fcntl.flock(lock, fcntl.LOCK_EX)
+    with certificate_lock(nonblocking=args.action == 'renew') as lock:
+        if lock is None:
+            print('已有证书任务正在执行，本次检查跳过。', flush=True)
+            return
+        if args.action == 'renew':
+            if not marker.is_file():
+                return
+            if time.time() < retry_at():
+                print('证书申请冷却中，本次整点检查跳过。', flush=True)
+                return
+            if os.getpgrp() != os.getpid():
+                os.setsid()
+        recover_pending_reissue()
         if args.action == 'issue':
-            issue(args.identifier, args.email)
+            enable_application()
+            check_certificate(requested=args.identifier)
+            if not ready(LIVE / 'fullchain.pem', LIVE / 'privkey.pem', 0):
+                raise ValueError('当前没有可用证书；已登记定时重试，成功后请重新执行 start')
         elif args.action == 'schedule':
             schedule()
         elif args.action == 'resume':
-            marker.unlink(missing_ok=True)
+            enable_application()
             schedule()
             try:
                 check_certificate()
             except (OSError, ValueError, subprocess.SubprocessError):
                 if not ready(LIVE / 'fullchain.pem', LIVE / 'privkey.pem', 0):
                     raise
-                print('暂时沿用当前有效证书启动，续期将在后台重试。', file=sys.stderr)
+                print('暂时沿用当前有效证书启动；失败与重试情况请查看证书日志。', file=sys.stderr)
             if not ready(LIVE / 'fullchain.pem', LIVE / 'privkey.pem', 0):
                 raise ValueError('当前证书不可用，已安排后台续期；成功后请重新执行 start。')
         else:
-            if marker.exists():
-                return
-            if os.getpgrp() != os.getpid():
-                os.setsid()
-            lock.seek(0)
-            lock.truncate()
-            json.dump({'pid': os.getpid(), 'start': process_tick(os.getpid())}, lock)
-            lock.flush()
-            try:
-                if not marker.exists():
-                    check_certificate()
-            finally:
-                lock.seek(0)
-                lock.truncate()
+            if marker.is_file():
+                check_certificate()
 
 
 if __name__ == '__main__':

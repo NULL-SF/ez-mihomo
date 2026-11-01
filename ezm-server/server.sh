@@ -99,20 +99,7 @@ check_platform() {
 }
 
 prepare_firewall() {
-  if ! command -v ufw >/dev/null; then
-    echo '未安装 UFW，跳过关闭 UFW。'
-    return 0
-  fi
-  [[ "$(id -u)" == 0 ]] || {
-    echo '关闭 UFW 需要 root 权限，请使用 sudo bash ./server.sh start（root 可省略 sudo）。' >&2
-    return 1
-  }
-  if ufw disable; then
-    echo 'UFW 已关闭；其他防火墙和云安全组不作修改。'
-  else
-    echo '关闭 UFW 失败，未继续安装 cron 或启动服务。' >&2
-    return 1
-  fi
+  "$PYTHON" "$ROOT/scripts/firewall.py" start 9>&-
 }
 start_services() {
   local certificate_checked=0
@@ -129,6 +116,7 @@ PYLOGS
     certificate_checked=1
   fi
   "$PYTHON" "$ROOT/scripts/configure.py" 9>&- || return $?
+  prepare_firewall || return $?
   if [[ "$certificate_checked" == 0 ]]; then
     "$PYTHON" "$ROOT/scripts/certificate.py" resume 9>&- || return $?
   fi
@@ -141,10 +129,11 @@ PYLOGS
   fi
 }
 stop_server() {
-  local renew_result=0
-  "$PYTHON" "$ROOT/scripts/certificate.py" pause 9>&- || renew_result=$?
-  "$PYTHON" "$ROOT/scripts/service.py" stop all 9>&- || return $?
-  return "$renew_result"
+  local result=0
+  "$PYTHON" "$ROOT/scripts/certificate.py" pause 9>&- || result=$?
+  "$PYTHON" "$ROOT/scripts/service.py" stop all 9>&- || result=$?
+  "$PYTHON" "$ROOT/scripts/firewall.py" stop 9>&- || result=$?
+  return "$result"
 }
 refresh_information_access() {
   local result=$?
@@ -160,9 +149,9 @@ PYACCESS
 }
 case "$cmd" in start|stop|restart|boot) trap refresh_information_access EXIT ;; esac
 case "$cmd" in
-  start) check_platform; prepare_firewall; prepare_dependencies; lock_management; start_services ;;
+  start) check_platform; prepare_dependencies; lock_management; prepare_firewall; start_services ;;
   stop) require_python; lock_management; stop_server ;;
-  restart) check_platform; require_python; lock_management; stop_server; prepare_firewall; prepare_dependencies; start_services ;;
+  restart) check_platform; require_python; lock_management; stop_server; prepare_dependencies; prepare_firewall; start_services ;;
   status) require_python; "$PYTHON" "$ROOT/scripts/service.py" status all 9>&- ;;
   boot) boot_menu ;;
   log)

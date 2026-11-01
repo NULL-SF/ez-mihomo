@@ -167,7 +167,8 @@ def generate(a):
    raise
  print('运行配置目录：'+str(ROOT/'runtime'))
  print('节点链接目录：'+str(ROOT/'output/links'))
- print('已生成 '+', '.join(selected)+' 的配置和链接；请在客户端导入 output/links/ 中对应的新链接。')
+ print('\n【节点链接已更新】'+', '.join(selected),flush=True)
+ print('请在客户端导入 output/links/ 中对应的新链接，旧链接不再可用。\n',flush=True)
  if a.self_signed:print('自签名仅用于测试：客户端必须导入 runtime/certs/config/live/ezm-node/fullchain.pem 作为信任证书，分享链接不包含该证书。')
 def certificate_name():
  import re
@@ -279,13 +280,13 @@ def recover_certificate():
  if len(addresses)!=1:raise ValueError('现有节点的服务器地址不一致，无法安全恢复证书')
  lost_directory=not directory.is_dir()
  print('证书签发或续期配置缺失，重新申请证书；保留现有节点凭据和链接。',flush=True)
- from certificate import reissue
- import fcntl
- directory.mkdir(mode=0o700,parents=True,exist_ok=True)
- with (directory/'renew.lock').open('a+') as lock:
-  os.chmod(lock.name,0o600)
-  fcntl.flock(lock,fcntl.LOCK_EX)
-  if not (directory/'config/renewal/ezm-node.conf').is_file():reissue(addresses.pop())
+ from certificate import check_certificate, recover_pending_reissue, ready, LIVE, certificate_lock, enable_application
+ with certificate_lock():
+  recover_pending_reissue()
+  enable_application()
+  check_certificate(requested=addresses.pop())
+  if not ready(LIVE/'fullchain.pem',LIVE/'privkey.pem',0):
+   raise ValueError('证书不可用，已保留定时重试；成功后请重新执行 start')
  # A deleted watched directory requires restarting its TLS listeners.
  if lost_directory:
   for protocol in SPECS:
@@ -298,8 +299,12 @@ def initialize():
  use_original_certificates()
  missing=[protocol for protocol in SPECS if not complete(protocol)]
  if not missing:return
+ print('\n'+'='*60,flush=True)
+ print('【警告】即将生成或重建节点',flush=True)
  print('节点配置或链接缺失、无效或不对应：'+', '.join(missing),flush=True)
- print('将为以上协议重新生成配置和链接；完成后请在客户端导入生成后的链接。',flush=True)
+ print('受影响节点的凭据和链接将重新生成，旧链接将失效！',flush=True)
+ print('完成后请在客户端导入 output/links/ 中对应的新链接。',flush=True)
+ print('='*60+'\n',flush=True)
  load_ports(ROOT/'config/ports')
  existing=(ROOT/'runtime/certs/config/live/ezm-node/fullchain.pem').is_file() and (ROOT/'runtime/certs/config/live/ezm-node/privkey.pem').is_file()
  if existing:
