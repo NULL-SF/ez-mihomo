@@ -51,7 +51,7 @@ def generate(a):
  if not 1<=a.reality_port<=65535:raise ValueError('REALITY 目标端口无效')
  reality=host(a.reality_target)
  reality_address='['+reality+']' if ':' in reality else reality
- if not getattr(a,'repair',False) and any((ROOT/'runtime'/p/'config.json').exists() or (ROOT/'output/links'/(p+'.txt')).exists() for p in selected):raise ValueError('所选协议已有节点配置或链接，拒绝覆盖凭据')
+ if not getattr(a,'repair',False) and any((ROOT/'runtime'/p/'config.json').exists() or (ROOT/'output/links'/(p+'.txt')).exists() for p in selected):raise ValueError('所选协议已有节点配置或链接，拒绝覆盖现有节点认证信息')
  if not (ROOT/'bin/mihomo_1.19.33').is_file():raise ValueError('缺少仓库自带的 bin/mihomo_1.19.33，请重新获取完整项目')
  (ROOT/'runtime').mkdir(parents=True,exist_ok=True,mode=0o700)
  with tempfile.TemporaryDirectory(dir=ROOT/'runtime') as temp:
@@ -279,14 +279,14 @@ def recover_certificate():
  if not addresses:return  # Fresh installation or internally managed local test certificates.
  if len(addresses)!=1:raise ValueError('现有节点的服务器地址不一致，无法安全恢复证书')
  lost_directory=not directory.is_dir()
- print('证书签发或续期配置缺失，重新申请证书；保留现有节点凭据和链接。',flush=True)
+ print('证书续期配置缺失，将重新申请证书；现有节点配置和链接不变。',flush=True)
  from certificate import check_certificate, recover_pending_reissue, ready, LIVE, certificate_lock, enable_application
  with certificate_lock():
   recover_pending_reissue()
   enable_application()
   check_certificate(requested=addresses.pop())
   if not ready(LIVE/'fullchain.pem',LIVE/'privkey.pem',0):
-   raise ValueError('证书不可用，已保留定时重试；成功后请重新执行 start')
+   raise ValueError('证书不可用，请稍后重新执行 start')
  # A deleted watched directory requires restarting its TLS listeners.
  if lost_directory:
   for protocol in SPECS:
@@ -302,7 +302,7 @@ def initialize():
  print('\n'+'='*60,flush=True)
  print('【警告】即将生成或重建节点',flush=True)
  print('节点配置或链接缺失、无效或不对应：'+', '.join(missing),flush=True)
- print('受影响节点的凭据和链接将重新生成，旧链接将失效！',flush=True)
+ print('受影响节点的认证信息（UUID、密码等）和链接将重新生成，旧链接将失效！',flush=True)
  print('完成后请在客户端导入 output/links/ 中对应的新链接。',flush=True)
  print('='*60+'\n',flush=True)
  load_ports(ROOT/'config/ports')

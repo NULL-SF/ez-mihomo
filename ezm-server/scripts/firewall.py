@@ -67,12 +67,14 @@ def required_ports():
     return required
 
 
-def configure(action):
+def configure(action, quiet=False):
     if not shutil.which('ufw'):
-        print('未安装 UFW，跳过防火墙规则管理。')
+        if not quiet:
+            print('未安装 UFW，跳过防火墙规则管理。')
         return
     if action == 'start' and 'Status: inactive' in ufw('status'):
-        print('UFW 未启用，保持原状态，不添加放行规则。')
+        if not quiet:
+            print('UFW 未启用，保持原状态，不添加放行规则。')
         return
     current = rules()
     if action == 'stop':
@@ -82,23 +84,40 @@ def configure(action):
         print('已移除本项目的 UFW 放行规则，原有规则保留。')
         return
     required = required_ports()
+    added, removed = [], []
     existing = {target(rule) for rule in current}
     for port in sorted(required):
         if port in existing or port.split('/')[0] in existing:
             continue
         # insert cannot overwrite an existing rule's comment (plain allow can).
         ufw('insert', '1', 'allow', port, 'comment', MARK + port)
+        added.append(port)
     # Remove only old project rules, including ports changed since last start.
     for rule in current:
         if owned(rule) and target(rule) not in required:
             ufw('--force', 'delete', *rule)
-    print('已按 TCP/UDP 放行本项目节点端口和证书验证端口 TCP 80。')
+            removed.append(target(rule))
+    for title, ports in (('UFW 新增放行规则：', added), ('UFW 移除放行规则：', removed)):
+        if not ports:
+            continue
+        print(title)
+        if '80/tcp' in ports:
+            print('  证书验证：80/TCP')
+        for transport in ('tcp', 'udp'):
+            numbers = sorted(int(port.split('/')[0]) for port in ports
+                             if port.endswith('/' + transport) and port != '80/tcp')
+            if numbers:
+                print('  节点 ' + transport.upper() + '：' + '、'.join(map(str, numbers)))
+    if not quiet and not added and not removed:
+        print('UFW 放行规则无变化。')
+
 
 
 if __name__ == '__main__':
     try:
-        if len(sys.argv) != 2 or sys.argv[1] not in ('start', 'stop'):
-            raise ValueError('用法：firewall.py start|stop')
-        configure(sys.argv[1])
+        if (len(sys.argv) not in (2, 3) or sys.argv[1] not in ('start', 'stop')
+                or (len(sys.argv) == 3 and sys.argv[2] != '--quiet')):
+            raise ValueError('用法：firewall.py start|stop [--quiet]')
+        configure(sys.argv[1], quiet=len(sys.argv) == 3)
     except (OSError, ValueError, subprocess.SubprocessError) as error:
         sys.exit('UFW 规则管理失败：' + str(error))

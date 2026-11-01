@@ -28,9 +28,9 @@ VLESS 的 REALITY 握手目标固定为 `www.microsoft.com:443`，VPS 需能访�
 
 `start` 在 `output/links/` 下按需生成 `vless.txt`、`vmess.txt`、`hysteria2.txt`、`trojan.txt`、`shadowsocks.txt`、`tuic.txt`、`anytls.txt`。每个文件一条完整链接，可以打开文件复制，或用 `links` 查看。
 
-链接包含连接凭据，应私下保存。`start` 逐协议检查配置与链接：两者完整且对应时沿用；任一缺失、损坏或不对应时，会提示并仅重新生成该协议的配置和链接，完成后提醒客户端导入新链接，其他节点不变。
+链接包含 UUID、密码等认证信息，应私下保存。`start` 逐协议检查配置与链接：两者完整且对应时沿用；任一缺失、损坏或不对应时，会提示并仅重新生成该协议的配置和链接，完成后提醒客户端导入新链接，其他节点不变。
 
-需要重建某个节点时，删除 `output/links/协议名.txt` 后执行 `start`。重建会更换该节点的凭据，客户端需重新导入新链接；修改端口时先修改对应的端口文件。
+需要重建某个节点时，删除 `output/links/协议名.txt` 后执行 `start`。重建会更换该节点的 UUID、密码等认证信息，客户端需重新导入新链接；修改端口时先修改对应的端口文件。
 
 ### 1.3 自动 TLS 证书
 
@@ -47,6 +47,8 @@ VLESS 的 REALITY 握手目标固定为 `www.microsoft.com:443`，VPS 需能访�
 VMess、Hysteria2、Trojan、TUIC、AnyTLS 直接读取 `runtime/certs/config/live/ezm-node/fullchain.pem`、`privkey.pem`，不另存部署副本。VLESS 使用 REALITY 公钥验证，链接已包含所需公钥；Shadowsocks 不需要证书。私钥只留在服务端，客户端通常导入链接即可。
 
 IP 证书有效期约 6 天半。`start` 立即检查证书，并登记每小时整点检查任务；任务重启后保留，以 root 身份执行。证书材料缺失、无效或剩余不超过 48 小时时自动申请，正常换证不中断转发，也不更换节点链接。
+
+时检发现本项目全部核心均未运行时，会关闭证书自动续期，执行 `start` 恢复。
 
 每次申请后至少等待 1 小时，机构要求更久时遵循其时间，重启不会重置等待。`stop` 取消检查并终止续期，下次 `start` 恢复。失败保留旧证书，日志见 `log/certs/renewal.log`；证书过期后新连接将验证失败。
 
@@ -73,7 +75,7 @@ sudo bash ./server.sh <命令>
 | 命令 | 说明 |
 |---|---|
 | `sudo bash ./server.sh start` | 放行所需 UFW 端口；检查 crontab 和证书；逐协议检查配置和链接，为空或异常时仅重建对应节点，完整且无误的节点恢复运行不重建。 |
-| `sudo bash ./server.sh stop` | 停止全部代理及自动续期，移除本项目的 UFW 放行规则，保留证书、配置和节点凭据。 |
+| `sudo bash ./server.sh stop` | 停止全部代理及证书自动续期，移除本项目的 UFW 放行规则，保留证书、节点配置和链接。 |
 | `sudo bash ./server.sh restart` | 先执行 `stop`，再执行 `start`。 |
 
 `start` 在 UFW 已启用时放行节点所需的 TCP／UDP 端口及证书验证端口 TCP 80；`stop` 只移除本项目添加的放行规则，保留原有规则。未安装或未启用 UFW 时保持原状态；其他防火墙和云安全组需自行放行。
@@ -113,7 +115,7 @@ sudo bash ./server.sh <命令>
 | `bin/mihomo_1.19.33`、`bin/LICENSE.mihomo` | 核心及许可证。 | 不改 |
 | `config/ports/` | 各协议的端口文件。 | 生成节点前按需修改 |
 | `runtime/certs/` | 证书、私钥、签发账户、续期状态和证书工具。 | 不改 |
-| `runtime/协议名/` | 对应协议的 `config.json` 和 `mihomo.pid`；配置含凭据。 | 不改 |
+| `runtime/协议名/` | 对应协议的 `config.json` 和 `mihomo.pid`；配置含节点认证信息。 | 不改 |
 | `runtime/` | 各协议运行目录、证书目录和运行状态。 | 需保留，不要当缓存清空 |
 | `log/` | 各协议日志、开机启动日志。 | 按需查看 |
 | `log/certs/` | `renewal.log` 为检查及续期结果，`letsencrypt.log` 为 Certbot 详细日志及其轮转文件。 | 用 `log` 菜单查看 |
@@ -135,7 +137,7 @@ sudo bash ./server.sh <命令>
 | Shadowsocks 使用 SS2022，不额外叠加插件 | 减少客户端依赖和配置组合。 |
 | 固定核心版本，不做内核性能调优 | 便于维护和复现，性能调优放在后面。 |
 
-UUID、密码和混淆密码自动生成，启停不更换凭据。链接遵循对应协议的分享格式；实际可导入范围取决于客户端实现。
+UUID、密码和混淆密码自动生成，启停不更换这些信息。链接遵循对应协议的分享格式；实际可导入范围取决于客户端实现。
 
 ## 5 迁移
 

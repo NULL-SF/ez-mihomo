@@ -99,7 +99,7 @@ check_platform() {
 }
 
 prepare_firewall() {
-  "$PYTHON" "$ROOT/scripts/firewall.py" start 9>&-
+  "$PYTHON" "$ROOT/scripts/firewall.py" start "$@" 9>&-
 }
 start_services() {
   local certificate_checked=0
@@ -116,7 +116,7 @@ PYLOGS
     certificate_checked=1
   fi
   "$PYTHON" "$ROOT/scripts/configure.py" 9>&- || return $?
-  prepare_firewall || return $?
+  prepare_firewall --quiet || return $?
   if [[ "$certificate_checked" == 0 ]]; then
     "$PYTHON" "$ROOT/scripts/certificate.py" resume 9>&- || return $?
   fi

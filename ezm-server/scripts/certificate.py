@@ -101,7 +101,7 @@ def certificate_lock(nonblocking=False):
 
 def cron_read():
     if not shutil.which('crontab'):
-        raise ValueError('自动续期需要 crontab 和运行中的 cron 服务，请先安装并启用 cron。')
+        raise ValueError('证书自动续期需要 crontab 和运行中的 cron 服务，请先安装并启用 cron。')
     result = subprocess.run(['crontab', '-l'], env=dict(os.environ, LC_ALL='C'), capture_output=True, text=True)
     if result.returncode:
         if 'no crontab for ' in result.stderr:
@@ -228,7 +228,7 @@ def validate(cert, key, seconds=3600):
 
 def verify_source():
     validate(LIVE / 'fullchain.pem', LIVE / 'privkey.pem')
-    print('原始证书及私钥已校验；核心直接读取并热加载。', flush=True)
+    print('证书和私钥校验通过。', flush=True)
 
 
 def set_check_schedule():
@@ -253,9 +253,9 @@ def set_check_schedule():
 def schedule():
     ensure_cron()
     if not set_check_schedule():
-        print('证书检查已暂停，未登记任务。', flush=True)
+        print('证书自动续期未启用，未登记检查任务。', flush=True)
         return
-    print('已确保每小时整点检查；已有相同任务保持不变。', flush=True)
+    print('证书自动检查任务已登记：每小时整点执行。', flush=True)
 
 
 def issue(identifier, email, config_dir=None):
@@ -383,7 +383,7 @@ def pause():
                         run(['crontab', '-r'])
             except (OSError, ValueError, subprocess.SubprocessError) as failure:
                 error = failure
-    print('自动续期已暂停，当前证书和节点凭据保留。', flush=True)
+    print('已停止证书自动续期，现有证书、节点配置和链接凭据保留。', flush=True)
     if error:
         raise ValueError('证书检查已暂停，但未完全停止：' + str(error))
 
@@ -579,18 +579,18 @@ def check_certificate(requested=None):
             verify_source()
         if managed and ready(LIVE / 'fullchain.pem', LIVE / 'privkey.pem'):
             finish_check()
-            print('原始证书剩余超过 48 小时，无需申请。', flush=True)
+            print('证书剩余有效期超过 48 小时，无需申请新证书。', flush=True)
             return
     deadline = retry_at()
     if time.time() < deadline:
-        print('尚未到续期重试时间：' + str(datetime.fromtimestamp(deadline)), flush=True)
+        print('下次允许申请证书的时间：' + str(datetime.fromtimestamp(deadline)), flush=True)
         return
     try:
         # Persist a one-hour guard before contacting the CA, including on crashes.
         if not schedule_retry(announce=False) or not (HOME / 'apply.on').is_file():
             return
         if not source_valid or not managed:
-            print('原始证书或续期资料缺失、无效，重新申请证书；不更换节点凭据。', flush=True)
+            print('证书、私钥或续期配置缺失、无效，将重新申请；现有节点配置和链接不变。', flush=True)
             reissue(requested or identifier())
         else:
             renew()
@@ -601,6 +601,22 @@ def check_certificate(requested=None):
         raise
     # Keep an hour of cooldown after a successful request as well.
     schedule_retry(announce=False)
+
+
+def refresh_application_state():
+    from service import SPECS, owned
+    # Only hold the management lock during this decision, so stop can still
+    # cancel a long-running certificate request after the decision completes.
+    with (ROOT / 'runtime/manage.lock').open('a+') as management:
+        try:
+            fcntl.flock(management, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            print('节点管理操作正在执行，本次整点检查跳过。', flush=True)
+            return False
+        if not any(owned(protocol, report_permission=True) for protocol in SPECS):
+            (HOME / 'apply.on').unlink(missing_ok=True)
+            print('全部节点核心均未运行，已关闭证书自动续期；执行 start 可恢复。', flush=True)
+        return True
 
 
 def main():
@@ -618,8 +634,11 @@ def main():
         pause()
         return
     marker = HOME / 'apply.on'
-    if args.action == 'renew' and not marker.is_file():
-        return
+    if args.action == 'renew':
+        if marker.is_file() and not refresh_application_state():
+            return  # A management operation is still running.
+        if not marker.is_file():
+            return
     if args.action == 'resume' and not (CONFIG / 'renewal/ezm-node.conf').is_file():
         return  # Existing externally managed certificates remain externally managed.
     HOME.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -632,7 +651,7 @@ def main():
             if not marker.is_file():
                 return
             if time.time() < retry_at():
-                print('证书申请冷却中，本次整点检查跳过。', flush=True)
+                print('证书申请仍在等待期，本次整点检查跳过。', flush=True)
                 return
             if os.getpgrp() != os.getpid():
                 os.setsid()
@@ -641,7 +660,7 @@ def main():
             enable_application()
             check_certificate(requested=args.identifier)
             if not ready(LIVE / 'fullchain.pem', LIVE / 'privkey.pem', 0):
-                raise ValueError('当前没有可用证书；已登记定时重试，成功后请重新执行 start')
+                raise ValueError('当前没有可用证书，请稍后重新执行 start')
         elif args.action == 'schedule':
             schedule()
         elif args.action == 'resume':
@@ -654,7 +673,7 @@ def main():
                     raise
                 print('暂时沿用当前有效证书启动；失败与重试情况请查看证书日志。', file=sys.stderr)
             if not ready(LIVE / 'fullchain.pem', LIVE / 'privkey.pem', 0):
-                raise ValueError('当前证书不可用，已安排后台续期；成功后请重新执行 start。')
+                raise ValueError('当前证书不可用，请稍后重新执行 start。')
         else:
             if marker.is_file():
                 check_certificate()
