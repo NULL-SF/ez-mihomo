@@ -106,6 +106,7 @@ sudo bash ./server.sh <命令>
 |---|---|---|
 | `server.sh` | 管理入口。 | 不改 |
 | `scripts/dependencies.sh` | 启动时检查、补齐系统运行依赖。 | 不改 |
+| `scripts/firewall.py` | 添加及移除本项目的 UFW 放行规则。 | 不改 |
 | `scripts/configure.py` | 逐协议检查并生成配套的节点配置和链接。 | 不改 |
 | `scripts/certificate.py` | 准备 cron、申请证书、管理续期及热更新。 | 不改 |
 | `scripts/service.py` | 进程身份、监听检查及启停。 | 不改 |

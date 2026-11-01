@@ -515,25 +515,41 @@ def recover_pending_reissue():
 
 
 def reissue(name):
-    # Sign in isolation; keep the current files available during the network request.
+    # Keep watched directories stable; only atomically replace their files.
     HOME.mkdir(mode=0o700, parents=True, exist_ok=True)
     recover_pending_reissue()
     with tempfile.TemporaryDirectory(prefix='.reissue-', dir=HOME) as folder:
         candidate = Path(folder) / 'candidate'
-        previous = Path(folder) / 'previous'
         issue(name, '', config_dir=candidate)
         if not (HOME / 'apply.on').is_file():
             raise InterruptedError('证书检查已暂停，未切换新证书')
         for path in (candidate / 'renewal').glob('*.conf'):
             path.write_text(path.read_text().replace(str(candidate), str(CONFIG)))
-        if CONFIG.exists():
-            CONFIG.rename(previous)
-        try:
-            candidate.rename(CONFIG)
-        except BaseException:
-            if previous.exists():
-                previous.rename(CONFIG)
-            raise
+        # New archive names must not overwrite files referenced by the old live
+        # symlinks while the certificate/key pair is being published.
+        pattern = re.compile(r'(cert|chain|fullchain|privkey)(\d+)\.pem')
+        archive = CONFIG / 'archive/ezm-node'
+        offset = max((int(match[2]) for path in archive.glob('*.pem')
+                      if (match := pattern.fullmatch(path.name))), default=0)
+        staged_archive = candidate / 'archive/ezm-node'
+        for path in list(staged_archive.glob('*.pem')):
+            match = pattern.fullmatch(path.name)
+            if match and offset:
+                path.rename(path.with_name(f'{match[1]}{int(match[2]) + offset}.pem'))
+        staged_live = candidate / 'live/ezm-node'
+        for path in staged_live.iterdir():
+            if path.is_symlink():
+                target = path.readlink()
+                match = pattern.fullmatch(target.name)
+                if match and offset:
+                    path.unlink()
+                    path.symlink_to(target.with_name(f'{match[1]}{int(match[2]) + offset}.pem'))
+        files = [path for path in candidate.rglob('*') if path.is_file() or path.is_symlink()]
+        files.sort(key=lambda path: (path.is_relative_to(staged_live), str(path)))
+        for path in files:
+            destination = CONFIG / path.relative_to(candidate)
+            destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            path.replace(destination)
 
 
 def valid_renewal_config():
