@@ -1,0 +1,14 @@
+/config/*
+!/config/ports/
+/config/ports/*
+!/config/ports/*.txt
+/runtime/
+/log/
+/certs/
+/output/
+.env
+.env.*
+__pycache__/
+*.py[cod]
+*.swp
+*~

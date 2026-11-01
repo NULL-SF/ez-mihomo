@@ -1,0 +1,10 @@
+/config/
+/runtime/
+/log/
+/certs/
+.env
+.env.*
+__pycache__/
+*.py[cod]
+*.swp
+*~
