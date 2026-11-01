@@ -52,6 +52,24 @@ fi
 mkdir -p -- "$(dirname -- "$target")"
 parent="$(cd -- "$(dirname -- "$target")" && pwd -P)"
 target="$parent/$(basename -- "$target")"
+if [[ "$project" == ezm-client ]]; then
+  [[ "$target" != *[[:space:]:]* ]] || {
+    echo '客户端安装路径不能包含空白或冒号，ProxyChains 无法使用该路径。' >&2; exit 1;
+  }
+  missing=()
+  for tool in bash python3 curl ss ip awk flock ps; do
+    command -v "$tool" >/dev/null || missing+=("$tool")
+  done
+  if ((${#missing[@]})); then
+    printf '缺少客户端运行组件：%s。请安装后重试。\n' "${missing[*]}" >&2
+    exit 1
+  fi
+  if ! command -v crontab >/dev/null; then
+    echo '提示：未安装 crontab，开机自启不可用；不影响手动启动。' >&2
+  elif ! ps -eo comm= | awk '$1 == "cron" || $1 == "crond" { found=1 } END { exit !found }'; then
+    echo '提示：未检测到运行中的 cron 服务，开机自启暂不可用；不影响手动启动。' >&2
+  fi
+fi
 work="$(mktemp -d "$parent/.ez-mihomo-install.XXXXXXXX")"
 trap 'rm -rf -- "$work"' EXIT
 printf '正在下载 %s，安装目录：%s\n' "$project" "$target"

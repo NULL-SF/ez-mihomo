@@ -316,19 +316,13 @@ VMess JSON 也接受正文中与所选传输匹配的标量参数。
 bash <(curl -fsSL https://raw.githubusercontent.com/NULL-SF/ez-mihomo/main/install.sh)
 ```
 
-选择 `2`（客户端），安装到当前目录的 `ezm-client/`，不自动启动。已有目录会更新程序和文档，保留配置及运行数据。
+选择 `2`（客户端），安装到当前目录的 `ezm-client/`，不自动启动。
 
 下载后进入目录：
 
 ```bash
 cd ezm-client
 ```
-
-使用 ProxyChains 终端接入时，项目路径不能包含空白或冒号；单独使用 HTTP / SOCKS 入口不受此限制。
-
-启动和测试至少需要 `bash`、`python3`、`curl`、`ss`、`ip`、`awk`、`flock`、`ps`。开机自启另需 `crontab` 命令和正在运行的 `cron` 服务；没有它们仍可手动 `start`。`boot` 写入当前用户的 crontab，不需要 `sudo`。
-
-节点链接文件及 `runtime/mihomo.json` 含连接凭据，只在自己的机器之间私下迁移。运行配置和 PID 无需作为迁移依据，脚本会按目标目录重新生成或核对；不要把节点链接粘贴进公开教程。
 
 在新服务器上，至少填好 `config/active.txt` 指定线路的链接；其他线路的链接可稍后再填。确认 `config/port.txt` 后，先启动代理：
 
