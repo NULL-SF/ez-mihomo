@@ -2,13 +2,13 @@
 """Generate mihomo server configurations in the current project directory."""
 import argparse, base64, ipaddress, json, os, secrets, shutil, subprocess, tempfile, uuid
 from pathlib import Path
-from urllib.parse import quote, urlencode
+from urllib.parse import quote, urlencode, urlsplit, parse_qsl, unquote
 import sys
 import urllib.request
 from types import SimpleNamespace
 sys.dont_write_bytecode=True
 sys.path.insert(0,str(Path(__file__).resolve().parent))
-from service import ROOT, SPECS
+from service import ROOT, SPECS, stop, owned, use_original_certificates, information_group
 
 def write(path,value):
  path.write_text(value if isinstance(value,str) else json.dumps(value,ensure_ascii=False,indent=2)+'\n');path.chmod(0o600)
@@ -42,6 +42,7 @@ def load_ports(path, base_port=None):
  return ports
 
 def generate(a):
+ selected=getattr(a,"protocols",tuple(SPECS))
  server=host(a.server);name=host(a.tls_name or a.server)
  ipaddress.ip_address(a.listen)
  ports=load_ports(a.ports,a.base_port)
@@ -50,28 +51,28 @@ def generate(a):
  if not 1<=a.reality_port<=65535:raise ValueError('REALITY 目标端口无效')
  reality=host(a.reality_target)
  reality_address='['+reality+']' if ':' in reality else reality
- if any((ROOT/'runtime'/p/'config.json').exists() or (ROOT/'output/links'/(p+'.txt')).exists() for p in SPECS):raise ValueError('当前项目已有节点配置，拒绝覆盖或更换凭据')
+ if not getattr(a,'repair',False) and any((ROOT/'runtime'/p/'config.json').exists() or (ROOT/'output/links'/(p+'.txt')).exists() for p in selected):raise ValueError('所选协议已有节点配置或链接，拒绝覆盖凭据')
  if not (ROOT/'bin/mihomo_1.19.33').is_file():raise ValueError('缺少仓库自带的 bin/mihomo_1.19.33，请重新获取完整项目')
  (ROOT/'runtime').mkdir(parents=True,exist_ok=True,mode=0o700)
  with tempfile.TemporaryDirectory(dir=ROOT/'runtime') as temp:
   temp=Path(temp);temp.chmod(0o700)
   config=temp/'config';config.mkdir(mode=0o700)
-  certs=temp/'certs';certs.mkdir(parents=True,mode=0o700)
+  certs=temp/'runtime/certs/config/live/ezm-node';certs.mkdir(parents=True,mode=0o700)
   link_directory=temp/'output/links';link_directory.mkdir(parents=True,mode=0o700)
   if a.self_signed:
    try:ipaddress.ip_address(name);san='IP:'+name
    except ValueError:san='DNS:'+name
-   run('openssl','req','-x509','-newkey','rsa:2048','-sha256','-nodes','-days','30','-subj','/CN='+name,'-addext','subjectAltName='+san,'-keyout',str(certs/'server.key'),'-out',str(certs/'server.crt'))
+   run('openssl','req','-x509','-newkey','rsa:2048','-sha256','-nodes','-days','30','-subj','/CN='+name,'-addext','subjectAltName='+san,'-keyout',str(certs/'privkey.pem'),'-out',str(certs/'fullchain.pem'))
   else:
-   shutil.copyfile(a.cert,certs/'server.crt');shutil.copyfile(a.key,certs/'server.key')
-  (certs/'server.key').chmod(0o600);(certs/'server.crt').chmod(0o600)
-  run('openssl','x509','-in',str(certs/'server.crt'),'-noout','-checkend','0')
+   shutil.copyfile(a.cert,certs/'fullchain.pem');shutil.copyfile(a.key,certs/'privkey.pem')
+  (certs/'privkey.pem').chmod(0o600);(certs/'fullchain.pem').chmod(0o600)
+  run('openssl','x509','-in',str(certs/'fullchain.pem'),'-noout','-checkend','0')
   try:ipaddress.ip_address(name);option='-verify_ip'
   except ValueError:option='-verify_hostname'
-  run('openssl','verify','-trusted',str(certs/'server.crt'),'-partial_chain','-purpose','sslserver',option,name,str(certs/'server.crt'))
-  if run('openssl','x509','-in',str(certs/'server.crt'),'-pubkey','-noout')!=run('openssl','pkey','-in',str(certs/'server.key'),'-passin','pass:','-pubout'):raise ValueError('证书和私钥不匹配')
+  run('openssl','verify','-trusted',str(certs/'fullchain.pem'),'-partial_chain','-purpose','sslserver',option,name,str(certs/'fullchain.pem'))
+  if run('openssl','x509','-in',str(certs/'fullchain.pem'),'-pubkey','-noout')!=run('openssl','pkey','-in',str(certs/'privkey.pem'),'-passin','pass:','-pubout'):raise ValueError('证书和私钥不匹配')
   # Certificate paths are relative to each mihomo runtime directory.
-  cert,key='../../certs/server.crt','../../certs/server.key'
+  cert,key='../certs/config/live/ezm-node/fullchain.pem','../certs/config/live/ezm-node/privkey.pem'
   ids={p:str(uuid.uuid4()) for p in SPECS}
   passwords={p:secrets.token_urlsafe(24) for p in SPECS}
   private=public=sid=''
@@ -84,7 +85,7 @@ def generate(a):
    public=base64.urlsafe_b64encode(public_der[-32:]).decode().rstrip('=')
    sid=secrets.token_hex(8)
   ipv6=':' in server;address='['+server+']' if ipv6 else server
-  for p in SPECS:
+  for p in selected:
    port=ports[p];uid=ids[p];password=passwords[p]
    endpoint=f'{address}:{port}'
    q={'sni':name};auth=password
@@ -117,7 +118,6 @@ def generate(a):
    else:listener.update(secure,users={'node':password})
    doc={'mode':'rule','log-level':'warning','listeners':[listener],'rules':['MATCH,DIRECT'],'profile':{'store-selected':False,'store-fake-ip':False}}
    home=temp/'runtime'/p;home.mkdir(parents=True)
-   write(home/'config.json',doc)
    if p=='vmess':
     link={'v':'2','ps':p,'add':server,'port':str(port),'id':uid,'aid':'0','scy':'auto','net':'tcp','type':'none','host':'','path':'','tls':'tls','sni':name}
     link='vmess://'+base64.b64encode(json.dumps(link).encode()).decode()
@@ -125,58 +125,197 @@ def generate(a):
     # SIP002: SS2022 credentials MUST use percent encoding, not base64.
     link=f'ss://{quote(listener["cipher"],safe="")}:{quote(password,safe="")}@{endpoint}'
    else:link=f'{p}://{quote(auth,safe=":")}@{endpoint}?{urlencode(q)}'
+   doc['_ezm']={'server':server,'tls-name':name}
+   write(home/'config.json',doc)
    write(link_directory/(p+'.txt'),link+'\n')
   port_directory=config/'ports';port_directory.mkdir(mode=0o700)
   for p in SPECS:write(port_directory/(p+'.txt'),str(ports[p])+'\n')
   # Validate without opening listeners; permit only this project's certificate directory.
-  for p in SPECS:
+  for p in selected:
    home=temp/'runtime'/p
    result=subprocess.run([str(ROOT/'bin/mihomo_1.19.33'),'-t','-d',str(home),'-f',str(home/'config.json')],env=dict(os.environ,SAFE_PATHS=str(certs)),capture_output=True)
    if result.returncode:raise ValueError(p+'：mihomo 配置校验失败')
   (ROOT/'output').mkdir(parents=True,exist_ok=True)
-  publications=[(certs,ROOT/'certs'),(port_directory,ROOT/'config/ports')]
-  publications += [(temp/'runtime'/p,ROOT/'runtime'/p) for p in SPECS]
-  publications.append((link_directory,ROOT/'output/links'))
+  publications=[]
+  if not getattr(a,'managed_source',False):
+   publications=[(certs/name,ROOT/'runtime/certs/config/live/ezm-node'/name) for name in ('fullchain.pem','privkey.pem')]
+  if not getattr(a,'repair',False):
+   publications.append((port_directory,ROOT/'config/ports'))
+  else:
+   for p in selected:
+    if owned(p):stop(p)
+  publications += [(temp/'runtime'/p,ROOT/'runtime'/p) for p in selected]
+  (ROOT/'output/links').mkdir(parents=True,exist_ok=True,mode=0o700)
+  publications += [(link_directory/(p+'.txt'),ROOT/'output/links'/(p+'.txt')) for p in selected]
   installed=[]
   try:
    for index,(staged,destination) in enumerate(publications):
     backup=temp/('previous-'+str(index));destination.parent.mkdir(parents=True,exist_ok=True)
-    if destination.exists():destination.rename(backup)
+    if destination.is_file():shutil.copy2(destination,backup)
+    elif destination.exists():destination.rename(backup)
     installed.append((destination,backup))
-    staged.rename(destination)
+    if destination.parent==ROOT/'output/links':
+     os.chown(staged,-1,information_group());staged.chmod(0o640)
+    staged.replace(destination)
   except BaseException:
    for destination,backup in reversed(installed):
-    if destination.exists():shutil.rmtree(destination)
-    if backup.exists():backup.rename(destination)
+    if backup.is_file():backup.replace(destination)
+    else:
+     if destination.is_dir():shutil.rmtree(destination)
+     elif destination.exists():destination.unlink()
+     if backup.exists():backup.rename(destination)
    raise
  print('运行配置目录：'+str(ROOT/'runtime'))
  print('节点链接目录：'+str(ROOT/'output/links'))
- print('已生成七种协议的 mihomo 配置和链接；凭据不输出到终端。')
- if a.self_signed:print('自签名仅用于测试：客户端必须导入 certs/server.crt 作为信任证书，分享链接不包含该证书。')
-def initialize():
- existing=[(ROOT/'runtime'/p/'config.json').is_file() for p in SPECS]
- links=[(ROOT/'output/links'/(p+'.txt')).is_file() for p in SPECS]
- if all(existing) and all(links):return
- if any(existing) or any(links):raise ValueError('节点配置不完整，请恢复 runtime/ 与 output/links/，不自动覆盖凭据。')
- load_ports(ROOT/'config/ports')
- # Prefer IPv4 so the exported nodes remain usable on IPv4-only clients.
+ print('已生成 '+', '.join(selected)+' 的配置和链接；请在客户端导入 output/links/ 中对应的新链接。')
+ if a.self_signed:print('自签名仅用于测试：客户端必须导入 runtime/certs/config/live/ezm-node/fullchain.pem 作为信任证书，分享链接不包含该证书。')
+def certificate_name():
+ import re
+ value=run('openssl','x509','-in',str(ROOT/'runtime/certs/config/live/ezm-node/fullchain.pem'),'-noout','-ext','subjectAltName')
+ match=re.search(r'(?:IP Address:|DNS:)([^,\s]+)',value)
+ if not match:raise ValueError('无法从现有证书确定节点地址')
+ return host(match.group(1))
+
+def node_link(protocol, doc):
+ metadata=doc.get('_ezm',{})
+ if not isinstance(metadata,dict):raise ValueError('节点地址信息无效')
+ server=metadata.get('server') or certificate_name()
+ name=metadata.get('tls-name') or server
+ listener=doc['listeners'][0];port=listener['port']
+ address='['+server+']' if ':' in server else server
+ endpoint=f'{address}:{port}';q={'sni':name}
+ if protocol=='vmess':
+  user=listener['users'][0]
+  value={'v':'2','ps':protocol,'add':server,'port':str(port),'id':user['uuid'],'aid':str(user.get('alterId',0)),'scy':'auto','net':'tcp','type':'none','host':'','path':'','tls':'tls','sni':name}
+  link='vmess://'+base64.b64encode(json.dumps(value).encode()).decode()
+ elif protocol=='shadowsocks':
+  link=f'ss://{quote(listener["cipher"],safe="")}:{quote(listener["password"],safe="")}@{endpoint}'
+ else:
+  if protocol=='vless':
+   user=listener['users'][0];auth=user['uuid'];reality=listener.get('reality-config')
+   q.update(encryption='none',type='tcp',security='tls')
+   if reality:
+    raw=base64.urlsafe_b64decode(reality['private-key']+'='*(-len(reality['private-key'])%4))
+    key=bytes.fromhex('302e020100300506032b656e04220420')+raw
+    public=subprocess.run(['openssl','pkey','-inform','DER','-pubout','-outform','DER'],input=key,capture_output=True,check=True).stdout[-32:]
+    q.update(security='reality',flow=user['flow'],sni=reality['server-names'][0],fp='chrome',pbk=base64.urlsafe_b64encode(public).decode().rstrip('='),sid=reality['short-id'][0])
+  elif protocol=='trojan':
+   auth=listener['users'][0]['password'];q.update(security='tls',type='tcp')
+  elif protocol=='tuic':
+   uid,password=next(iter(listener['users'].items()));auth=uid+':'+password;q.update(congestion_control=listener.get('congestion-controller','cubic'),alpn=','.join(listener.get('alpn',['h3'])))
+  else:
+   auth=next(iter(listener['users'].values()))
+   if protocol=='hysteria2':q.update(obfs=listener['obfs'],**{'obfs-password':listener['obfs-password']})
+  link=f'{protocol}://{quote(auth,safe=":")}@{endpoint}?{urlencode(q)}'
+ return link
+
+def link_identity(value):
+ if value.startswith('vmess://'):
+  encoded=value[len('vmess://'):]
+  return json.loads(base64.urlsafe_b64decode(encoded+'='*(-len(encoded)%4)))
+ parsed=urlsplit(value)
+ return (parsed.scheme,unquote(parsed.netloc),parsed.path,sorted(parse_qsl(parsed.query,keep_blank_values=True)))
+
+def complete(protocol):
+ config=ROOT/'runtime'/protocol/'config.json';link=ROOT/'output/links'/(protocol+'.txt')
+ try:
+  doc=json.loads(config.read_text())
+  if not isinstance(doc,dict) or not isinstance(doc.get('listeners'),list):return False
+  if not doc['listeners'] or not isinstance(doc['listeners'][0],dict):return False
+  if doc['listeners'][0].get('type')!=protocol:return False
+  value=link.read_text().strip()
+  if not value or len(value.splitlines())!=1:return False
+  if link_identity(value)!=link_identity(node_link(protocol,doc)):return False
+  result=subprocess.run([str(ROOT/'bin/mihomo_1.19.33'),'-t','-d',str(config.parent),'-f',str(config)],
+   env=dict(os.environ,SAFE_PATHS=str(ROOT/'runtime/certs')),capture_output=True,timeout=15)
+  return result.returncode==0
+ except (OSError,ValueError,KeyError,TypeError,IndexError,StopIteration,subprocess.SubprocessError):
+  return False
+
+def detect_server():
+ # Prefer addresses actually assigned to an active interface over NAT egress.
+ result=subprocess.run(['ip','-j','address','show','up','scope','global'],capture_output=True,text=True,check=True)
+ candidates=[]
+ for interface in json.loads(result.stdout):
+  for item in interface.get('addr_info',[]):
+   flags=item.get('flags',[])
+   if any(item.get(flag) or flag in flags for flag in ('deprecated','tentative','dadfailed')):continue
+   if item.get('preferred_life_time')==0:continue
+   try:address=ipaddress.ip_address(item.get('local',''))
+   except ValueError:continue
+   if address.is_global:
+    temporary=bool(item.get('temporary') or 'temporary' in flags)
+    candidates.append((address.version,temporary,str(address)))
+ if candidates:
+  _,temporary,value=min(candidates)
+  if temporary:print('提示：探测到的是临时 IPv6 地址，地址变更后需重新部署节点。',flush=True)
+  return value
+ # Some VPS providers expose a mapped IPv4 rather than assigning it to the NIC.
+ # This fallback is used only when there is no public address on the host.
  opener=urllib.request.build_opener(urllib.request.ProxyHandler({}))
- server=None
- for endpoint in ('https://api.ipify.org','https://api6.ipify.org'):
+ for endpoint in ('https://api.ipify.org','https://ipv4.icanhazip.com'):
   try:
    with opener.open(endpoint,timeout=12) as response:value=response.read(128).decode().strip()
    address=ipaddress.ip_address(value)
-   if address.is_global:server=str(address);break
+   if address.version==4 and address.is_global:
+    print('提示：使用 IPv4 出口地址；若处于 NAT 后，需确认公网 TCP 80 和节点端口已映射到本机。',flush=True)
+    return str(address)
   except (OSError,ValueError,UnicodeError):continue
- if server is None:raise ValueError('无法探测 VPS 公网 IP，请检查网络后重试 start。')
- print('首次启动，自动配置公网 IP：'+server,flush=True)
- print('将自动申请 Let’s Encrypt 免费证书并同意其服务条款：https://letsencrypt.org/repository/',flush=True)
- from certificate import issue
- issue(server,'')
+ raise ValueError('未找到本机公网地址，也无法探测 IPv4 出口；请检查网络和地址配置。')
+
+def recover_certificate():
+ # Losing certificate state must not rotate otherwise valid node credentials.
+ directory=ROOT/'runtime/certs'
+ if (directory/'config/renewal/ezm-node.conf').is_file():return
+ addresses=set()
+ for protocol in SPECS:
+  try:
+   doc=json.loads((ROOT/'runtime'/protocol/'config.json').read_text())
+   if not isinstance(doc,dict) or not isinstance(doc.get('_ezm',{}),dict):continue
+   address=ipaddress.ip_address(doc.get('_ezm',{}).get('server',''))
+   if address.is_global:addresses.add(str(address))
+  except (OSError,ValueError,TypeError):continue
+ if not addresses:return  # Fresh installation or internally managed local test certificates.
+ if len(addresses)!=1:raise ValueError('现有节点的服务器地址不一致，无法安全恢复证书')
+ lost_directory=not directory.is_dir()
+ print('证书签发或续期配置缺失，重新申请证书；保留现有节点凭据和链接。',flush=True)
+ from certificate import reissue
+ import fcntl
+ directory.mkdir(mode=0o700,parents=True,exist_ok=True)
+ with (directory/'renew.lock').open('a+') as lock:
+  os.chmod(lock.name,0o600)
+  fcntl.flock(lock,fcntl.LOCK_EX)
+  if not (directory/'config/renewal/ezm-node.conf').is_file():reissue(addresses.pop())
+ # A deleted watched directory requires restarting its TLS listeners.
+ if lost_directory:
+  for protocol in SPECS:
+   try:listener=json.loads((ROOT/'runtime'/protocol/'config.json').read_text())['listeners'][0]
+   except (OSError,ValueError,TypeError,KeyError,IndexError):continue
+   if 'certificate' in listener and owned(protocol):stop(protocol)
+
+def initialize():
+ recover_certificate()
+ use_original_certificates()
+ missing=[protocol for protocol in SPECS if not complete(protocol)]
+ if not missing:return
+ print('节点配置或链接缺失、无效或不对应：'+', '.join(missing),flush=True)
+ print('将为以上协议重新生成配置和链接；完成后请在客户端导入生成后的链接。',flush=True)
+ load_ports(ROOT/'config/ports')
+ existing=(ROOT/'runtime/certs/config/live/ezm-node/fullchain.pem').is_file() and (ROOT/'runtime/certs/config/live/ezm-node/privkey.pem').is_file()
+ if existing:
+  server=certificate_name()
+ else:
+  server=detect_server()
+ print('自动配置节点地址：'+server,flush=True)
+ if not existing:
+  print('将自动申请 Let’s Encrypt 免费证书并同意其服务条款：https://letsencrypt.org/repository/',flush=True)
+  subprocess.run([sys.executable,str(ROOT/'scripts/certificate.py'),'issue','--identifier',server],check=True)
  generate(SimpleNamespace(server=server,tls_name=server,ports=ROOT/'config/ports',base_port=None,
   listen='::' if ':' in server else '0.0.0.0',self_signed=False,
-  cert=ROOT/'runtime/acme/config/live/ezm-node/fullchain.pem',key=ROOT/'runtime/acme/config/live/ezm-node/privkey.pem',
-  vless_security='reality',reality_target='www.microsoft.com',reality_port=443))
+  cert=ROOT/'runtime/certs/config/live/ezm-node/fullchain.pem' if existing else ROOT/'runtime/certs/config/live/ezm-node/fullchain.pem',
+  key=ROOT/'runtime/certs/config/live/ezm-node/privkey.pem' if existing else ROOT/'runtime/certs/config/live/ezm-node/privkey.pem',
+  vless_security='reality',reality_target='www.microsoft.com',reality_port=443,
+  protocols=missing,repair=True,managed_source=True))
 
 if __name__=='__main__':
  if len(sys.argv)==1:

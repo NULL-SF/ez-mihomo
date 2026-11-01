@@ -13,6 +13,14 @@ case "$cmd" in
   start|stop|restart|status|links|boot|help|-h|--help)
     (($# == 0)) || { echo "$cmd 不接受额外参数" >&2; exit 1; } ;;
 esac
+case "$cmd" in
+  start|stop|restart|boot)
+    [[ "$EUID" == 0 ]] || {
+      printf '%s 需要 root 权限，请执行 sudo bash ./server.sh %s（root 用户可省略 sudo）。\n' "$cmd" "$cmd" >&2
+      exit 1
+    }
+    ;;
+esac
 lock_management() {
   command -v flock >/dev/null || { echo '缺少 flock，请先执行 sudo bash ./server.sh start 准备依赖。' >&2; return 1; }
   mkdir -p "$ROOT/runtime"
@@ -43,8 +51,11 @@ boot_menu() {
   if [[ "$choice" == on ]]; then
     "$PYTHON" "$ROOT/scripts/certificate.py" prepare-cron 9>&- || return 1
   fi
-  # Share the runtime directory lock with certificate cron updates, without a new file.
-  exec 8<"$ROOT/runtime"
+  # Share a per-user lock with both client boot and certificate cron updates.
+  [[ -n "$PYTHON" ]] || require_python
+  local cron_home
+  cron_home="$("$PYTHON" -c 'import os,pwd; print(pwd.getpwuid(os.geteuid()).pw_dir)')" || return 1
+  exec 8<"$cron_home"
   flock -w 30 8 || return 1
   current=''; had_crontab=0
   if command -v crontab >/dev/null; then
@@ -75,6 +86,18 @@ PYCRON
   fi
 }
 
+check_platform() {
+  [[ "$(uname -s)" == Linux && "$(uname -m)" == x86_64 ]] || {
+    echo '本项目仅支持 Linux x86_64。' >&2; return 1;
+  }
+  [[ -x "$ROOT/bin/mihomo_1.19.33" ]] || {
+    echo '缺少可执行的 bin/mihomo_1.19.33，请重新安装完整项目。' >&2; return 1;
+  }
+  "$ROOT/bin/mihomo_1.19.33" -v >/dev/null 2>&1 || {
+    echo '核心无法在当前环境运行，请检查系统兼容性及目录执行权限。' >&2; return 1;
+  }
+}
+
 prepare_firewall() {
   if ! command -v ufw >/dev/null; then
     echo '未安装 UFW，跳过关闭 UFW。'
@@ -92,9 +115,23 @@ prepare_firewall() {
   fi
 }
 start_services() {
+  local certificate_checked=0
+  "$PYTHON" - "$ROOT" <<'PYLOGS' || return $?
+import sys
+sys.path.insert(0,sys.argv[1]+'/scripts')
+from service import migrate_certificate_logs
+migrate_certificate_logs()
+PYLOGS
   "$PYTHON" "$ROOT/scripts/certificate.py" prepare-cron 9>&- || return $?
+  # Validate or renew original certificates before validating node configurations.
+  if [[ -f "$ROOT/runtime/certs/config/renewal/ezm-node.conf" ]]; then
+    "$PYTHON" "$ROOT/scripts/certificate.py" resume 9>&- || return $?
+    certificate_checked=1
+  fi
   "$PYTHON" "$ROOT/scripts/configure.py" 9>&- || return $?
-  "$PYTHON" "$ROOT/scripts/certificate.py" resume 9>&- || return $?
+  if [[ "$certificate_checked" == 0 ]]; then
+    "$PYTHON" "$ROOT/scripts/certificate.py" resume 9>&- || return $?
+  fi
   if "$PYTHON" "$ROOT/scripts/service.py" start all 9>&-; then
     return 0
   else
@@ -109,14 +146,27 @@ stop_server() {
   "$PYTHON" "$ROOT/scripts/service.py" stop all 9>&- || return $?
   return "$renew_result"
 }
+refresh_information_access() {
+  local result=$?
+  if [[ "$EUID" == 0 && -n "$PYTHON" ]]; then
+    "$PYTHON" - "$ROOT" <<'PYACCESS' || echo '信息文件权限设置失败，请检查目录权限。' >&2
+import sys
+sys.path.insert(0,sys.argv[1]+'/scripts')
+from service import information_access
+information_access()
+PYACCESS
+  fi
+  return "$result"
+}
+case "$cmd" in start|stop|restart|boot) trap refresh_information_access EXIT ;; esac
 case "$cmd" in
-  start) prepare_firewall; prepare_dependencies; lock_management; start_services ;;
+  start) check_platform; prepare_firewall; prepare_dependencies; lock_management; start_services ;;
   stop) require_python; lock_management; stop_server ;;
-  restart) require_python; lock_management; stop_server; prepare_firewall; prepare_dependencies; start_services ;;
-  status) require_python; lock_management; "$PYTHON" "$ROOT/scripts/service.py" status all 9>&- ;;
+  restart) check_platform; require_python; lock_management; stop_server; prepare_firewall; prepare_dependencies; start_services ;;
+  status) require_python; "$PYTHON" "$ROOT/scripts/service.py" status all 9>&- ;;
   boot) boot_menu ;;
   log)
-    (($# == 0)) || { echo 'log 不接受参数，直接执行 sudo bash ./server.sh log（root 可省略 sudo）。' >&2; exit 1; }
+    (($# == 0)) || { echo 'log 不接受参数，直接执行 bash ./server.sh log。' >&2; exit 1; }
     echo '选择要查看的日志：'
     echo '  0) 全部'
     echo '  1) VLESS'
@@ -126,7 +176,7 @@ case "$cmd" in
     echo '  5) Shadowsocks'
     echo '  6) TUIC'
     echo '  7) AnyTLS'
-    echo '  8) 证书续期'
+    echo '  8) 证书申请与续期'
     read -r -p '输入序号 [0]：' choice || { echo '已取消。'; exit 0; }
     protocols=(vless vmess hysteria2 trojan shadowsocks tuic anytls certificate)
     case "${choice:-0}" in
@@ -136,9 +186,15 @@ case "$cmd" in
     esac
     log_files=()
     for protocol in "${selected[@]}"; do
-      [[ ! -f "$ROOT/log/$protocol.log" ]] || log_files+=("$ROOT/log/$protocol.log")
+      if [[ "$protocol" == certificate ]]; then
+        for file in "$ROOT/log/certs/renewal.log" "$ROOT/log/certs/letsencrypt.log" "$ROOT/log/certificate.log" "$ROOT/log/acme/letsencrypt.log"; do
+          [[ ! -f "$file" ]] || log_files+=("$file")
+        done
+      else
+        [[ ! -f "$ROOT/log/$protocol.log" ]] || log_files+=("$ROOT/log/$protocol.log")
+      fi
     done
-    ((${#log_files[@]})) || { echo '所选服务暂无运行日志，请先启动服务。' >&2; exit 1; }
+    ((${#log_files[@]})) || { echo '所选项目暂无日志。' >&2; exit 1; }
     exec tail -v -n 50 -F -- "${log_files[@]}"
     ;;
   links)
@@ -159,7 +215,6 @@ case "$cmd" in
       *) echo '输入无效，未查看链接。' >&2; exit 1 ;;
     esac
     require_python
-    lock_management
     "$PYTHON" - "$ROOT" "$selected" 9>&- <<'PYLINKS'
 import sys
 from pathlib import Path

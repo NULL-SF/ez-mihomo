@@ -141,7 +141,7 @@ source ./proxy.env
 
 | 命令 | 说明 |
 |---|---|
-| `bash ./client.sh boot` | 选择开启或关闭开机自启，修改当前用户的 crontab，不影响当前服务。开机只启动一次，异常退出不会自动重启。 |
+| `bash ./client.sh boot` | 选择开启或关闭开机自启，修改当前用户的 crontab，不影响当前服务。 |
 | `bash ./client.sh terminal` | 选择开启或关闭新交互终端的自动接入，修改当前用户的 `.bashrc` 和项目内的启用标记；不影响已打开的终端，也不启停 ezm-client 服务。 |
 
 `boot` 控制开机启动服务，`terminal` 控制新终端自动执行 `source`。若服务未启动，新终端的自动接入会报错；启动服务后，在该终端重新 `source` 即可。
@@ -167,7 +167,7 @@ source ./proxy.env
 | `config/links/tuic.txt` | TUIC 节点链接，一行。 | 使用或更换 TUIC 时改 |
 | `config/links/anytls.txt` | AnyTLS 节点链接，一行。 | 使用或更换 AnyTLS 时改 |
 | `proxy.env`、`lib/libproxychains4.so` | 当前终端接入代理的脚本和库。 | 不改，按上节命令使用 |
-| `runtime/` | 运行中的配置、锁文件及 `mihomo.pid`，可能含节点凭据；代理运行时需要它。 | 不改；迁移时不需复制旧内容 |
+| `runtime/` | 运行中的配置及 `mihomo.pid`，可能含节点凭据；代理运行时需要它。 | 不改；迁移时不需复制旧内容 |
 | `log/mihomo.log` | 运行日志；代理运行时持续写入。 | 用 `log` 查看 |
 | `config/terminal.on` | 终端自动接入功能的持久标记文件。 | 不改；用 `terminal` 命令设置 |
 

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Obtain and renew the project's ACME certificate without restarting listeners."""
 import argparse
+import configparser
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
@@ -9,6 +10,7 @@ import ipaddress
 import hashlib
 import json
 import os
+import pwd
 from pathlib import Path
 import re
 import shlex
@@ -23,7 +25,7 @@ import urllib.request
 
 sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parents[1]
-HOME = ROOT / 'runtime/acme'
+HOME = ROOT / 'runtime/certs'
 CONFIG = HOME / 'config'
 LIVE = CONFIG / 'live/ezm-node'
 MARK = ' # ezm-server-certificate-renew'
@@ -38,8 +40,8 @@ def run(args, **kwargs):
 
 @contextmanager
 def cron_lock():
-    directory = ROOT / 'runtime'
-    directory.mkdir(parents=True, exist_ok=True)
+    # All projects for this UID share the same crontab; lock a stable inode.
+    directory = Path(pwd.getpwuid(os.geteuid()).pw_dir)
     fd = os.open(directory, os.O_RDONLY)
     try:
         fcntl.flock(fd, fcntl.LOCK_EX)
@@ -113,10 +115,13 @@ def ensure_cron():
 def tool():
     candidate = shutil.which('certbot')
     if candidate:
-        result = subprocess.run([candidate, '--version'], capture_output=True, text=True)
-        version = re.search(r'\b(\d+)\.(\d+)', result.stdout)
-        if result.returncode == 0 and version and tuple(map(int, version.groups())) >= (5, 4):
-            return [candidate]
+        try:
+            result = subprocess.run([candidate, '--version'], capture_output=True, text=True, timeout=10)
+            version = re.search(r'\b(\d+)\.(\d+)', result.stdout)
+            if result.returncode == 0 and version and tuple(map(int, version.groups())) >= (5, 4):
+                return [candidate]
+        except (OSError, subprocess.SubprocessError):
+            pass  # Fall back to the project-local environment if the system tool is broken.
     venv = HOME / 'venv'
     binary = venv / 'bin/certbot'
     usable = False
@@ -161,7 +166,7 @@ def environment():
 
 def base(binary):
     return [*binary, '--config-dir', str(CONFIG), '--work-dir', str(HOME / 'work'),
-            '--logs-dir', str(ROOT / 'log/acme'), '--non-interactive']
+            '--logs-dir', str(ROOT / 'log/certs'), '--non-interactive']
 
 
 def validate(cert, key, seconds=3600):
@@ -172,49 +177,9 @@ def validate(cert, key, seconds=3600):
         raise ValueError('新证书与私钥不匹配，保留当前证书。')
 
 
-def deploy():
-    cert, key = LIVE / 'fullchain.pem', LIVE / 'privkey.pem'
-    validate(cert, key)
-    target = ROOT / 'certs'
-    target.mkdir(mode=0o700, exist_ok=True)
-    contents = [(target / 'server.key', key.read_bytes()), (target / 'server.crt', cert.read_bytes())]
-    # Reuse the private key on renewal; validate both files before replacing either.
-    # The core retains the last valid pair while its watcher observes the update.
-    staged_files = []
-    changed = []
-    try:
-        for path, data in contents:
-            previous = path.read_bytes() if path.is_file() else None
-            if previous == data:
-                continue
-            with tempfile.NamedTemporaryFile(dir=target, delete=False) as stream:
-                staged = Path(stream.name)
-                staged_files.append(staged)
-                os.chmod(staged, 0o600)
-                stream.write(data)
-                stream.flush()
-                os.fsync(stream.fileno())
-            changed.append((path, staged, previous))
-        published = []
-        try:
-            for path, staged, previous in changed:
-                os.replace(staged, path)
-                published.append((path, previous))
-        except OSError:
-            for path, previous in reversed(published):
-                if previous is None:
-                    path.unlink(missing_ok=True)
-                else:
-                    with tempfile.NamedTemporaryFile(dir=target, delete=False) as stream:
-                        recovery = Path(stream.name)
-                        os.chmod(recovery, 0o600)
-                        stream.write(previous)
-                    os.replace(recovery, path)
-            raise
-    finally:
-        for staged in staged_files:
-            staged.unlink(missing_ok=True)
-    print('证书已校验并更新；核心热加载，无需重启。', flush=True)
+def verify_source():
+    validate(LIVE / 'fullchain.pem', LIVE / 'privkey.pem')
+    print('原始证书及私钥已校验；核心直接读取并热加载。', flush=True)
 
 
 def schedule():
@@ -225,7 +190,7 @@ def schedule():
         current = cron_read()
         command = ' '.join(shlex.quote(str(x)) for x in (sys.executable, ROOT / 'scripts/certificate.py', 'renew'))
         now = datetime.now()
-        line = f'{now.minute} {now.hour} * * * ' + command + ' >> ' + shlex.quote(str(ROOT / 'log/certificate.log')) + ' 2>&1' + MARK
+        line = f'{now.minute} {now.hour} * * * umask 027; ' + command + ' >> ' + shlex.quote(str(ROOT / 'log/certs/renewal.log')) + ' 2>&1' + MARK
         if '\n' in str(ROOT) or '\r' in str(ROOT):
             raise ValueError('项目路径含换行符，无法设置续期任务。')
         line = line.replace('%', r'\%')
@@ -238,7 +203,7 @@ def schedule():
 
 def issue(identifier, email):
     HOME.mkdir(mode=0o700, parents=True, exist_ok=True)
-    (ROOT / 'log').mkdir(mode=0o700, exist_ok=True)
+    (ROOT / 'log/certs').mkdir(mode=0o700, parents=True, exist_ok=True)
     ensure_cron()  # Prepare the scheduler before issuing a short-lived certificate.
     cron_read()
     try:
@@ -265,7 +230,7 @@ def issue(identifier, email):
     contact = ['--email', email] if email else ['--register-unsafely-without-email']
     run(base(binary) + ['certonly', '--standalone', '--preferred-profile', 'shortlived',
                        '--cert-name', 'ezm-node', '--agree-tos', '--reuse-key', *contact, *identity], env=environment())
-    deploy()
+    verify_source()
     print('受信任证书申请成功。', flush=True)
 
 
@@ -322,7 +287,7 @@ def renew():
     binary = tool()
     run(base(binary) + ['renew', '--cert-name', 'ezm-node', '--reuse-key', '--force-renewal', '--quiet'],
         env=environment(), capture_output=True, text=True)
-    deploy()
+    verify_source()
 
 
 def ready(cert, key, seconds=RENEW_BEFORE):
@@ -385,7 +350,7 @@ def schedule_retry(error):
         current = cron_read()
         command = ' '.join(shlex.quote(str(x)) for x in (sys.executable, ROOT / 'scripts/certificate.py', 'renew'))
         minute = datetime.fromtimestamp(deadline).minute
-        line = f'{minute} * * * * ' + command + ' >> ' + shlex.quote(str(ROOT / 'log/certificate.log')) + ' 2>&1' + RETRY_MARK
+        line = f'{minute} * * * * umask 027; ' + command + ' >> ' + shlex.quote(str(ROOT / 'log/certs/renewal.log')) + ' 2>&1' + RETRY_MARK
         line = line.replace('%', r'\%')
         kept = [entry for entry in current.splitlines() if not entry.endswith(RETRY_MARK)]
         run(['crontab', '-'], input='\n'.join([*kept, line]) + '\n', text=True)
@@ -394,23 +359,77 @@ def schedule_retry(error):
         print(error.stderr.strip(), file=sys.stderr)
 
 
+def identifier():
+    values = set()
+    for path in (ROOT / 'runtime').glob('*/config.json'):
+        try:
+            doc = json.loads(path.read_text())
+            if not isinstance(doc, dict) or not isinstance(doc.get('_ezm', {}), dict):
+                continue
+            value = doc.get('_ezm', {}).get('server')
+            if value:
+                values.add(value)
+        except (OSError, ValueError, TypeError):
+            continue
+    if len(values) == 1:
+        return values.pop()
+    if not values:
+        result = subprocess.run(['openssl', 'x509', '-in', str(LIVE / 'fullchain.pem'), '-noout', '-ext', 'subjectAltName'],
+                                capture_output=True, text=True, check=True)
+        match = re.search(r'(?:IP Address:|DNS:)([^,\s]+)', result.stdout)
+        if match:
+            return match.group(1)
+    raise ValueError('无法确定唯一节点地址，未重新申请证书')
+
+
+def reissue(name):
+    # A caller holds renew.lock. Keep the previous data until signing succeeds.
+    HOME.mkdir(mode=0o700, parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix='.reissue-', dir=HOME) as folder:
+        backup = Path(folder) / 'config'
+        if CONFIG.exists():
+            CONFIG.rename(backup)
+        try:
+            issue(name, '')
+        except BaseException:
+            if CONFIG.exists():
+                shutil.rmtree(CONFIG)
+            if backup.exists():
+                backup.rename(CONFIG)
+            raise
+
+
+def valid_renewal_config():
+    try:
+        parser = configparser.RawConfigParser(strict=False)
+        parser.read_string('[certificate]\n' + (CONFIG / 'renewal/ezm-node.conf').read_text())
+        return parser.get('renewalparams', 'authenticator', fallback='') == 'standalone'
+    except (OSError, configparser.Error, UnicodeError):
+        return False
+
+
 def check_certificate():
-    if ready(ROOT / 'certs/server.crt', ROOT / 'certs/server.key'):
-        clear_retry()
-        print('当前证书剩余超过 48 小时，无需更新。', flush=True)
-        return
-    if ready(LIVE / 'fullchain.pem', LIVE / 'privkey.pem'):
-        deploy()
-        clear_retry()
-        return
+    source_valid = ready(LIVE / 'fullchain.pem', LIVE / 'privkey.pem', 0)
+    managed = valid_renewal_config()
+    if source_valid:
+        if ready(LIVE / 'fullchain.pem', LIVE / 'privkey.pem', 3600):
+            verify_source()
+        if managed and ready(LIVE / 'fullchain.pem', LIVE / 'privkey.pem'):
+            clear_retry()
+            print('原始证书剩余超过 48 小时，无需申请。', flush=True)
+            return
     deadline = retry_at()
     if time.time() < deadline:
         print('尚未到续期重试时间：' + str(datetime.fromtimestamp(deadline)), flush=True)
         return
     try:
-        renew()
-        if not ready(ROOT / 'certs/server.crt', ROOT / 'certs/server.key'):
-            raise ValueError('更新后的证书仍不足 48 小时，保留重试任务。')
+        if not source_valid or not managed:
+            print('原始证书或续期资料缺失、无效，重新申请证书；不更换节点凭据。', flush=True)
+            reissue(identifier())
+        else:
+            renew()
+        if not ready(LIVE / 'fullchain.pem', LIVE / 'privkey.pem'):
+            raise ValueError('申请后的证书仍不足 48 小时，保留重试任务')
     except (OSError, ValueError, subprocess.SubprocessError) as error:
         schedule_retry(error)
         raise
@@ -437,7 +456,7 @@ def main():
     if args.action == 'resume' and not (CONFIG / 'renewal/ezm-node.conf').is_file():
         return  # Existing externally managed certificates remain externally managed.
     HOME.mkdir(mode=0o700, parents=True, exist_ok=True)
-    (ROOT / 'log').mkdir(mode=0o700, exist_ok=True)
+    (ROOT / 'log/certs').mkdir(mode=0o700, parents=True, exist_ok=True)
     with (HOME / 'renew.lock').open('a+') as lock:
         os.chmod(lock.name, 0o600)
         fcntl.flock(lock, fcntl.LOCK_EX)
@@ -451,16 +470,14 @@ def main():
             try:
                 check_certificate()
             except (OSError, ValueError, subprocess.SubprocessError):
-                if not ready(ROOT / 'certs/server.crt', ROOT / 'certs/server.key', 0):
+                if not ready(LIVE / 'fullchain.pem', LIVE / 'privkey.pem', 0):
                     raise
                 print('暂时沿用当前有效证书启动，续期将在后台重试。', file=sys.stderr)
-            if not ready(ROOT / 'certs/server.crt', ROOT / 'certs/server.key', 0):
+            if not ready(LIVE / 'fullchain.pem', LIVE / 'privkey.pem', 0):
                 raise ValueError('当前证书不可用，已安排后台续期；成功后请重新执行 start。')
         else:
             if marker.exists():
                 return
-            if not (CONFIG / 'renewal/ezm-node.conf').is_file():
-                raise ValueError('缺少自动证书配置，不执行续期。')
             if os.getpgrp() != os.getpid():
                 os.setsid()
             lock.seek(0)
@@ -480,3 +497,10 @@ if __name__ == '__main__':
         main()
     except (OSError, ValueError, subprocess.SubprocessError) as error:
         sys.exit('证书操作失败：' + str(error))
+    finally:
+        try:
+            sys.path.insert(0, str(ROOT / 'scripts'))
+            from service import information_access
+            information_access()
+        except OSError as error:
+            print('证书日志读取权限设置失败：' + str(error), file=sys.stderr)

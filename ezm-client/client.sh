@@ -163,8 +163,11 @@ cron_enabled() {
   crontab -l 2>/dev/null | grep " # ${MARK}$" >/dev/null
 }
 
-set_cron() {
-  local mode="$1" current entry had_crontab=1
+set_cron() (
+  local mode="$1" current entry had_crontab=1 cron_home
+  cron_home="$(python3 -c 'import os,pwd; print(pwd.getpwuid(os.geteuid()).pw_dir)')" || return 1
+  exec 8<"$cron_home"
+  flock -w 30 8 || { echo '其他开机任务设置尚未结束，请稍后重试。' >&2; return 1; }
   if ! current="$(LC_ALL=C crontab -l 2>&1)"; then
     if [[ "$current" == *'no crontab for '* ]]; then
       current=""
@@ -186,7 +189,7 @@ set_cron() {
     return
   fi
   printf '%s\n' "$current" | crontab -
-}
+)
 
 start_proxy() {
   if port_open; then
@@ -207,7 +210,7 @@ start_proxy() {
   _mihomo_check_available_ports "$ROOT" "$PROXY_PORT" || return 1
   # 核心不能持有管理锁，否则后续 stop/restart 会一直等待。
   mkdir -p "${ROOT}/log"
-  ( exec {MANAGEMENT_LOCK}>&-; exec nohup "${ROOT}/scripts/client-service.sh" ) >> "$LOG" 2>&1 < /dev/null &
+  ( exec {MANAGEMENT_LOCK}>&-; exec nohup "${ROOT}/scripts/client-service.sh" --managed ) >> "$LOG" 2>&1 < /dev/null &
   local child=$!
   disown || true
   # 核心在默认路由出现前最多等待 30 秒，这里留出余量。端口一旦打开即返回。
@@ -361,7 +364,7 @@ switch_mihomo() {
     note "未能停止当前进程，未切换，线路仍为 ${previous}。"
     return 1
   fi
-  printf '%s\n' "$choice" > "$ACTIVE"
+  _mihomo_write_text "$ACTIVE" "$choice"
   if ! start_proxy; then
     note "已切换到 ${choice}，并已写入 config/active.txt。监听未能启动，详见 ${LOG}"
     return 1

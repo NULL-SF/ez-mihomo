@@ -1,11 +1,92 @@
 #!/usr/bin/env python3
 """Manage only processes started by this project, with PID reuse checks."""
-import argparse, json, os, re, signal, socket, subprocess, time
+import argparse, json, os, re, signal, socket, subprocess, time, tempfile
 from pathlib import Path
 import sys
 sys.dont_write_bytecode=True
 ROOT=Path(__file__).resolve().parents[1]
 SPECS=('vless','vmess','hysteria2','trojan','shadowsocks','tuic','anytls')
+
+def state_file(p):
+ return ROOT/'runtime'/p/'mihomo.pid'
+
+def migrate_certificate_logs():
+ directory=ROOT/'log/certs';old=ROOT/'log/acme'
+ if old.is_dir():
+  if directory.exists():raise ValueError('证书新旧日志目录同时存在，请先检查 log/certs 与 log/acme')
+  old.rename(directory)
+ else:directory.mkdir(parents=True,exist_ok=True,mode=0o700)
+ previous=ROOT/'log/certificate.log';current=directory/'renewal.log'
+ if previous.is_file():
+  if current.exists():raise ValueError('证书新旧续期日志同时存在，请先检查日志文件')
+  previous.rename(current)
+
+def use_original_certificates():
+ """One-time switch from the former deployed copies without changing credentials."""
+ directory=ROOT/'runtime/certs'
+ old_paths={directory/'server.crt',directory/'server.key'}
+ changes=[]
+ for protocol in SPECS:
+  path=ROOT/'runtime'/protocol/'config.json'
+  if not path.is_file():continue
+  try:doc=json.loads(path.read_text())
+  except (OSError,ValueError):continue
+  if not isinstance(doc,dict) or not isinstance(doc.get('listeners'),list):continue
+  changed=False
+  for listener in doc['listeners']:
+   if not isinstance(listener,dict):continue
+   for field,name in [('certificate','fullchain.pem'),('private-key','privkey.pem')]:
+    if not isinstance(listener.get(field),str):continue
+    value=Path(listener[field]);absolute=(path.parent/value).resolve() if not value.is_absolute() else value
+    if absolute in old_paths:
+     listener[field]='../certs/config/live/ezm-node/'+name;changed=True
+  if changed:changes.append((protocol,path,doc))
+ if changes:
+  print("切换为直接读取原始证书，将重启受影响节点；节点链接不变。",flush=True)
+  from certificate import verify_source
+  verify_source()
+  for protocol,path,doc in changes:
+   if owned(protocol):stop(protocol)
+   temporary=path.with_suffix('.migrate')
+   try:
+    temporary.write_text(json.dumps(doc,ensure_ascii=False,indent=2)+'\n');temporary.chmod(0o600);temporary.replace(path)
+   finally:temporary.unlink(missing_ok=True)
+ if (directory/'config/live/ezm-node/fullchain.pem').is_file() and (directory/'config/live/ezm-node/privkey.pem').is_file():
+  for path in old_paths:path.unlink(missing_ok=True)
+
+def information_group():
+ if os.environ.get('SUDO_GID'):return int(os.environ['SUDO_GID'])
+ runtime=ROOT/'runtime'
+ if runtime.is_dir() and runtime.stat().st_gid!=0:return runtime.stat().st_gid
+ return ROOT.stat().st_gid
+
+def information_access():
+ if os.geteuid()!=0:return
+ # Grant the installing user group read access only to PID, log and link files.
+ group=information_group()
+ def access(path,mode):
+  if path.is_symlink():return
+  os.chown(path,-1,group);path.chmod(mode)
+ runtime=ROOT/'runtime'
+ if runtime.is_dir() and not runtime.is_symlink():
+  access(runtime,0o2750)
+  for protocol in SPECS:
+   directory=runtime/protocol
+   if directory.is_dir() and not directory.is_symlink():access(directory,0o2750)
+   pid=state_file(protocol)
+   if pid.is_file():access(pid,0o640)
+ output=ROOT/'output'
+ if output.is_dir():access(output,0o750)
+ for directory in (ROOT/'log',output/'links'):
+  if not directory.is_dir() or directory.is_symlink():continue
+  access(directory,0o2750)
+  for parent,dirs,files in os.walk(directory,followlinks=False):
+   for name in dirs:
+    path=Path(parent)/name
+    if not path.is_symlink():access(path,0o2750)
+   for name in files:
+    path=Path(parent)/name
+    if path.is_file() and not path.is_symlink():access(path,0o640)
 
 def command(p):
  return [str(ROOT/'bin/mihomo_1.19.33'),'-d',str(ROOT/'runtime'/p),'-f',str(ROOT/'runtime'/p/'config.json')]
@@ -17,14 +98,27 @@ def identity(pid):
   return fields[19]
  except (OSError,IndexError):return None
 
-def owned(p):
+def owned(p, report_permission=False):
  try:
-  state=json.loads((ROOT/'runtime'/(p+'.pid')).read_text())
+  state=json.loads(state_file(p).read_text())
   if identity(state['pid'])!=state['start']:return None
   argv=Path(f'/proc/{state["pid"]}/cmdline').read_bytes().split(b'\0')
-  if argv!=[x.encode() for x in command(p)]+[b'']:return None
-  return state['pid']
- except (OSError,ValueError,KeyError,TypeError,IndexError):return None
+  if argv==[x.encode() for x in command(p)]+[b'']:return state['pid']
+ except PermissionError:
+  if report_permission:raise
+ except (OSError,ValueError,KeyError,TypeError,IndexError):pass
+ return None
+
+def write_state(path,value):
+ with tempfile.NamedTemporaryFile(dir=path.parent,mode='w',delete=False) as stream:
+  temporary=Path(stream.name)
+  try:
+   os.chown(temporary,-1,information_group())
+   os.chmod(temporary,0o640);json.dump(value,stream);stream.flush();os.fsync(stream.fileno())
+  except BaseException:
+   temporary.unlink(missing_ok=True);raise
+ try:temporary.replace(path)
+ finally:temporary.unlink(missing_ok=True)
 
 def entry(p):
  n=json.loads((ROOT/'runtime'/p/'config.json').read_text())['listeners'][0]
@@ -65,17 +159,17 @@ def start(p):
  if not (ROOT/'runtime'/p/'config.json').is_file():raise ValueError('缺少服务端配置，请执行 sudo bash ./server.sh start 自动初始化（root 可省略 sudo）')
  if owned(p):print(p+': 已运行');return False
  preflight(p)
- env=dict(os.environ,SAFE_PATHS=str(ROOT/'certs'))
+ env=dict(os.environ,SAFE_PATHS=str(ROOT/'runtime/certs'))
  (ROOT/'runtime'/p).mkdir(parents=True,exist_ok=True)
  for k in list(env):
   if k.lower() in ('http_proxy','https_proxy','all_proxy','no_proxy') or k=='LD_PRELOAD':env.pop(k,None)
  with (ROOT/'log'/(p+'.log')).open('ab') as log:
   child=subprocess.Popen(command(p),cwd=ROOT,env=env,stdin=subprocess.DEVNULL,stdout=log,stderr=log,start_new_session=True)
-  state=ROOT/'runtime'/(p+'.pid')
+  state=state_file(p)
   try:
    tick=identity(child.pid)
    if not tick:raise ValueError(p+': 启动失败，查看 log/'+p+'.log')
-   state.write_text(json.dumps({'pid':child.pid,'start':tick}));state.chmod(0o600)
+   write_state(state,{'pid':child.pid,'start':tick})
    for _ in range(40):
     if child.poll() is not None:raise ValueError(p+': 启动退出，查看 log/'+p+'.log')
     if listening(p,child.pid):break
@@ -99,20 +193,21 @@ def stop(p):
    if not owned(p):break
    time.sleep(.1)
   if owned(p):raise ValueError(p+': 未退出，保留状态文件')
- (ROOT/'runtime'/(p+'.pid')).unlink(missing_ok=True)
+ state_file(p).unlink(missing_ok=True)
  print(p+': 已停止')
 
 if __name__=='__main__':
  parser=argparse.ArgumentParser();parser.add_argument('action',choices=['start','stop','restart','status','run']);parser.add_argument('protocol',choices=[*SPECS,'all']);a=parser.parse_args()
  try:
-  for d in ['runtime','log']:(ROOT/d).mkdir(mode=0o700,parents=True,exist_ok=True)
+  if a.action!='status':
+   for d in ['runtime','log']:(ROOT/d).mkdir(mode=0o700,parents=True,exist_ok=True)
   protocols=list(SPECS) if a.protocol=='all' else [a.protocol]
   if a.action=='run':
    if a.protocol=='all':raise ValueError('run 只接受一个协议')
    if not (ROOT/'runtime'/a.protocol/'config.json').is_file():raise ValueError('缺少服务端配置，请执行 sudo bash ./server.sh start 自动初始化（root 可省略 sudo）')
    for key in list(os.environ):
     if key.lower() in ('http_proxy','https_proxy','all_proxy','no_proxy') or key=='LD_PRELOAD':os.environ.pop(key,None)
-   os.environ['SAFE_PATHS']=str(ROOT/'certs');(ROOT/'runtime'/a.protocol).mkdir(parents=True,exist_ok=True)
+   os.environ['SAFE_PATHS']=str(ROOT/'runtime/certs');(ROOT/'runtime'/a.protocol).mkdir(parents=True,exist_ok=True)
    os.chdir(ROOT);os.execv(command(a.protocol)[0],command(a.protocol))
   started=[]
   try:
@@ -129,7 +224,9 @@ if __name__=='__main__':
      version=re.search(r'\bv[0-9][^\s]*',result.stdout)
      print('核心：mihomo '+(version.group() if version else '版本未知'))
     except (OSError,subprocess.SubprocessError):print('核心：不可用，请检查 bin/mihomo_1.19.33')
-    for p in protocols:print(p+(': 运行中' if owned(p) else ': 未运行'))
+    for p in protocols:
+     try:print(p+(': 运行中' if owned(p,report_permission=True) else ': 未运行'))
+     except PermissionError:print(p+': 无法确认状态（进程信息或 PID 文件读取受限）')
   except BaseException:
    for p in reversed(started):stop(p)
    raise

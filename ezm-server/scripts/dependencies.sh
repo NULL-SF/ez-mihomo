@@ -24,10 +24,12 @@ prepare_dependencies() {
   elif command -v dnf >/dev/null; then manager=dnf
   elif command -v yum >/dev/null; then manager=yum
   else manager=''; fi
-  for command_name in curl openssl flock crontab; do
+  for command_name in curl openssl flock crontab ip; do
     command -v "$command_name" >/dev/null && continue
     case "$command_name" in
       flock) packages+=(util-linux) ;;
+      ip)
+        if [[ "$manager" == apt-get ]]; then packages+=(iproute2); else packages+=(iproute); fi ;;
       crontab)
         if [[ "$manager" == apt-get ]]; then packages+=(cron); else packages+=(cronie); fi ;;
       *) packages+=("$command_name") ;;
@@ -62,7 +64,7 @@ prepare_dependencies() {
   "$PYTHON" -c 'import ssl, venv' >/dev/null 2>&1 || {
     echo 'Python 缺少 ssl 或 venv 模块，请安装对应组件后重试。' >&2; return 1;
   }
-  for command_name in curl openssl flock crontab; do
+  for command_name in curl openssl flock crontab ip; do
     command -v "$command_name" >/dev/null || { echo "依赖安装后仍缺少 $command_name。" >&2; return 1; }
   done
 }

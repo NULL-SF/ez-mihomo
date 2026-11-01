@@ -12,6 +12,19 @@ ACTIVE="$ROOT/config/active.txt"
 umask 077
 [[ -x "$CORE" ]] || { echo '缺少仓库自带的 bin/mihomo_1.19.33，请重新获取完整项目' >&2; exit 1; }
 mkdir -p "$ROOT/runtime" "$ROOT/config/links"
+# The interactive start already holds management.lock while waiting for readiness.
+# A direct/cron start must acquire it itself and release it before exec.
+STARTUP_LOCK=0
+if (($# > 1)); then echo '后台入口参数无效。' >&2; exit 1; fi
+case "${1:-}" in
+  --managed) ;;
+  '')
+    exec 8>"$ROOT/runtime/management.lock"
+    flock -w 45 8 || { echo '其他管理操作尚未结束，未启动。' >&2; exit 1; }
+    STARTUP_LOCK=1
+    ;;
+  *) echo '后台入口参数无效。' >&2; exit 1 ;;
+esac
 exec 9>"$ROOT/runtime/service.lock"
 flock -n 9 || exit 0
 for protocol in vless vmess hysteria2 trojan shadowsocks tuic anytls; do
@@ -27,9 +40,9 @@ case "$profile" in
   vless|vmess|hysteria2|trojan|shadowsocks|tuic|anytls) ;;
   *) echo '当前线路名称无效' >&2; exit 1 ;;
 esac
-printf '%s\n' "$profile" > "$ACTIVE"
+_mihomo_write_text "$ACTIVE" "$profile"
 _mihomo_check_available_ports "$ROOT" "$PROXY_PORT"
-echo $$ > "$ROOT/runtime/mihomo.pid"
+_mihomo_write_text "$ROOT/runtime/mihomo.pid" "$$"
 trap 'rm -f "$ROOT/runtime/mihomo.pid"' EXIT
 for _ in $(seq 1 30); do
   if ip route show default 2>/dev/null | grep . >/dev/null; then break; fi
@@ -68,4 +81,5 @@ fi
 # Credentials are only needed for parsing, not as exported process environment.
 unset MIHOMO_LINK MIHOMO_PROFILE MIHOMO_PORT MIHOMO_ROOT
 printf '[mihomo] 启动线路 %s，混合入口 127.0.0.1:%s。\n' "$profile" "$PROXY_PORT" >&2
+if [[ "$STARTUP_LOCK" == 1 ]]; then exec 8>&-; fi
 exec "$CORE" -d "$ROOT/runtime" -f "$CONFIG"

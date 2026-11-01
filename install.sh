@@ -64,6 +64,10 @@ if [[ "$project" == ezm-client ]]; then
     printf '缺少客户端运行组件：%s。请安装后重试。\n' "${missing[*]}" >&2
     exit 1
   fi
+  python3 -c 'import sys,ssl; sys.exit(0 if sys.version_info >= (3,9) else 1)' >/dev/null 2>&1 || {
+    echo '客户端需要 Python 3.9+ 及 ssl 模块，请安装兼容版本后重试。' >&2
+    exit 1
+  }
   if ! command -v crontab >/dev/null; then
     echo '提示：未安装 crontab，开机自启不可用；不影响手动启动。' >&2
   elif ! ps -eo comm= | awk '$1 == "cron" || $1 == "crond" { found=1 } END { exit !found }'; then

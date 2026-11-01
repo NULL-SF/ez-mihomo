@@ -43,6 +43,15 @@ _mihomo_load_ports() {
 }
 
 # 启动/切换/终端接入时保存默认回退值；有效配置保持不变。
+_mihomo_write_text() {
+  local file="$1" value="$2" temporary
+  temporary=$(mktemp "${file}.XXXXXX") || return 1
+  if ! printf '%s\n' "$value" > "$temporary" || ! mv -f -- "$temporary" "$file"; then
+    rm -f -- "$temporary"
+    return 1
+  fi
+}
+
 _mihomo_ensure_ports() {
   local root="$1" temporary
   _mihomo_load_ports "$root" || return 1

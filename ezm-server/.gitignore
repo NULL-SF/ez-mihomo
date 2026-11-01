@@ -4,7 +4,6 @@
 !/config/ports/*.txt
 /runtime/
 /log/
-/certs/
 /output/
 .env
 .env.*
