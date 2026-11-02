@@ -72,10 +72,6 @@ def configure(action, quiet=False):
         if not quiet:
             print('未安装 UFW，跳过防火墙规则管理。')
         return
-    if action == 'start' and 'Status: inactive' in ufw('status'):
-        if not quiet:
-            print('UFW 未启用，保持原状态，不添加放行规则。')
-        return
     current = rules()
     if action == 'stop':
         for rule in current:
