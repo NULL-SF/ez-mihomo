@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # 管理 127.0.0.1 上的 SOCKS / HTTP 混合入口，端口见 config/port.txt。
 # 七种线路均使用 bin/mihomo_1.19.33。当前线路见 config/active.txt。
-# 开机自启写在该用户的 crontab，到点执行 scripts/client-service.sh。start 也是把这个脚本放进后台。
+# 开机自启写在该用户的 crontab，到点执行 client.sh start，统一走启动准备。
 # 操作结果写入 log/mihomo.log。询问与 status 只显示在终端。
 set -euo pipefail
 export PYTHONDONTWRITEBYTECODE=1
@@ -14,6 +14,13 @@ source "${ROOT}/scripts/terminal-env.sh"
 _mihomo_remove_preload "$ROOT"
 unset -f _mihomo_remove_preload
 unset HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy NO_PROXY no_proxy
+source "$ROOT/scripts/dependencies.sh"
+case "${1:-}" in
+  status|test|terminal|log) client_dependencies "$1" ;;
+  boot) client_dependencies boot-control ;;
+  __write_proxychains) client_dependencies proxychains ;;
+  ''|help|-h|--help) client_dependencies help ;;
+esac
 ACTIVE="${ROOT}/config/active.txt"
 PIDFILE="${ROOT}/runtime/mihomo.pid"
 LOG="${ROOT}/log/mihomo.log"
@@ -21,33 +28,42 @@ MARK="ezm-client-proxy-boot"
 TERMINAL_MARK="ezm-client-proxy-terminal"
 TERMINAL_FLAG="${ROOT}/config/terminal.on"
 BASHRC="${HOME}/.bashrc"
+MANAGEMENT_LOCK=''
 load_port() {
   _mihomo_load_ports "$ROOT" || return 1
   PORT="$PROXY_PORT"
 }
 PORT_CONFIG_VALID=1
-if ! load_port; then
-  case "${1:-}" in
-    status|stop|log)
-      PORT_CONFIG_VALID=0
-      PORT=0 PROXY_PORT=0
-      ;;
-    *) exit 1 ;;
-  esac
-fi
+PORT_CONFIG_NEEDED=0
+case "${1:-}" in
+  start|stop|restart|switch|status|test|__write_proxychains)
+    PORT_CONFIG_NEEDED=1
+    if ! load_port; then
+      case "${1:-}" in
+        status|stop)
+          PORT_CONFIG_VALID=0
+          PORT=0 PROXY_PORT=0
+          ;;
+        *) exit 1 ;;
+      esac
+    fi
+    ;;
+esac
+
 ensure_port() {
   _mihomo_ensure_ports "$ROOT" || return 1
   PORT="$PROXY_PORT"
 }
 
 lock_management() {
+  [[ -z "${MANAGEMENT_LOCK:-}" ]] || return 0
   mkdir -p "${ROOT}/runtime"
   exec {MANAGEMENT_LOCK}>"${ROOT}/runtime/management.lock"
   if ! flock -w 45 "$MANAGEMENT_LOCK"; then
     printf '其他管理操作尚未结束，请稍后重试。\n' >&2
     return 1
   fi
-  if [[ "$PORT_CONFIG_VALID" == 1 ]]; then load_port; fi
+  if [[ "$PORT_CONFIG_NEEDED" == 1 && "$PORT_CONFIG_VALID" == 1 ]]; then load_port; fi
 }
 
 sync_proxychains() {
@@ -148,22 +164,24 @@ kill_tree() {
 }
 
 cron_line() {
-  local service="${ROOT}/scripts/client-service.sh" logfile="$LOG" logdir="${ROOT}/log" line
+  local service="${ROOT}/client.sh" logfile="$LOG" logdir="${ROOT}/log" line
   [[ "$ROOT" != *$'\n'* ]] || { printf '路径含换行符，无法登记 crontab。\n' >&2; return 1; }
   service="${service//\'/\'\\\'\'}"
   logfile="${logfile//\'/\'\\\'\'}"
   logdir="${logdir//\'/\'\\\'\'}"
-  printf -v line "@reboot sleep 20; mkdir -p '%s'; PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin '%s' >> '%s' 2>&1 < /dev/null # %s" \
+  printf -v line "@reboot sleep 20; mkdir -p '%s'; PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin /bin/bash '%s' start >> '%s' 2>&1 < /dev/null # %s" \
     "$logdir" "$service" "$logfile" "$MARK"
   # cron 即使在引号内也会解释百分号，需先转义。
   printf '%s\n' "${line//%/\\%}"
 }
 
 cron_enabled() {
+  command -v crontab >/dev/null || return 1
   crontab -l 2>/dev/null | grep " # ${MARK}$" >/dev/null
 }
 
 set_cron() (
+  if [[ "$1" == off ]] && ! command -v crontab >/dev/null; then return 0; fi
   local mode="$1" current entry had_crontab=1 cron_home
   cron_home="$(python3 -c 'import os,pwd; print(pwd.getpwuid(os.geteuid()).pw_dir)')" || return 1
   exec 8<"$cron_home"
@@ -192,6 +210,11 @@ set_cron() (
 )
 
 start_proxy() {
+  client_dependencies prepare || return $?
+  client_platform || return $?
+  lock_management || return $?
+  ensure_port || return $?
+  FRESH_START=0
   if port_open; then
     if ! own_listener; then
       note "启动失败：127.0.0.1:${PORT} 已由其他进程占用。请先在 config/port.txt 设置空闲端口。"
@@ -243,6 +266,8 @@ start_proxy() {
 
 # 只结束本项目的进程；配置端口上的其他进程不属于停止范围。
 stop_proxy() {
+  client_dependencies stop || return $?
+  lock_management || return $?
   local pid attempt
   if daemon_alive; then
     pid="$(tr -d '[:space:]' < "$PIDFILE")"
@@ -348,6 +373,7 @@ switch_mihomo() {
       return 1
       ;;
   esac
+  client_dependencies prepare
   lock_management
   ensure_port
   _mihomo_check_available_ports "$ROOT" "$PROXY_PORT" || return 1
@@ -478,6 +504,7 @@ boot_mihomo() {
   read -r choice
   case "$choice" in
     1|on|开启)
+      client_dependencies boot
       lock_management
       set_cron on
       note "开机自启已开启。已写入 crontab，下次开机会自动启动。这次没有启动监听。"
@@ -570,20 +597,13 @@ main() {
   fi
   case "${1:-}" in
     start)
-      lock_management
-      ensure_port
-      FRESH_START=0
       start_proxy
       if [[ "${FRESH_START:-0}" -eq 1 ]]; then
         report_connection || true
       fi
       ;;
-    stop) lock_management; stop_proxy ;;
+    stop) stop_proxy ;;
     restart)
-      lock_management
-      ensure_port
-      _mihomo_check_available_ports "$ROOT" "$PROXY_PORT"
-      FRESH_START=0
       stop_proxy
       start_proxy
       report_connection || true

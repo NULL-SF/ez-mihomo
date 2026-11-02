@@ -310,7 +310,18 @@ VMess JSON 也接受正文中与所选传输匹配的标量参数。
 
 ## 6 迁移
 
-首次下载也可使用安装脚本，无需 Git：
+若尚未安装下载和解压工具，先按系统准备（root 用户可省略 sudo）：
+
+```bash
+# Debian / Ubuntu
+sudo apt-get update && sudo apt-get install -y curl ca-certificates tar gzip
+
+# Fedora / RHEL 系
+sudo dnf install -y curl ca-certificates tar gzip
+# 使用 yum 的系统将 dnf 换成 yum
+```
+
+可使用安装脚本，无需 Git：
 
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/NULL-SF/ez-mihomo/main/install.sh)

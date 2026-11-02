@@ -4,9 +4,12 @@ set -euo pipefail
 export PYTHONDONTWRITEBYTECODE=1
 # Do not let a client ProxyChains preload redirect server initialization probes.
 unset LD_PRELOAD
-ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+ROOT="${BASH_SOURCE[0]%/*}"
+[[ "$ROOT" != "${BASH_SOURCE[0]}" ]] || ROOT=.
+ROOT="$(cd -- "$ROOT" && pwd -P)"
 source "$ROOT/scripts/dependencies.sh"
 PYTHON=''
+MANAGEMENT_LOCKED=0
 cmd="${1:-help}"
 if (($#)); then shift; fi
 case "$cmd" in
@@ -22,10 +25,12 @@ case "$cmd" in
     ;;
 esac
 lock_management() {
-  command -v flock >/dev/null || { echo '缺少 flock，请先执行 sudo bash ./server.sh start 准备依赖。' >&2; return 1; }
+  [[ "${MANAGEMENT_LOCKED:-0}" == 0 ]] || return 0
+  require_tools flock mkdir || return $?
   mkdir -p "$ROOT/runtime"
   exec 9>"$ROOT/runtime/manage.lock"
-  flock -w 30 9
+  flock -w 30 9 || return $?
+  MANAGEMENT_LOCKED=1
 }
 boot_menu() {
   local current='' had_crontab=0 choice state=关
@@ -36,7 +41,7 @@ boot_menu() {
       else printf '读取 crontab 失败，未修改：%s\n' "$current" >&2; return 1; fi
     fi
   fi
-  if printf '%s\n' "$current" | grep -q ' # ezm-server-proxy-boot$'; then state=开; fi
+  if [[ "$current"$'\n' == *' # ezm-server-proxy-boot'$'\n'* ]]; then state=开; fi
   printf '开机自启：%s\n  1) 开启\n  2) 关闭\n' "$state"
   read -r -p '输入序号：' choice || { echo '已取消，未修改开机自启。'; return 0; }
   case "$choice" in
@@ -45,14 +50,16 @@ boot_menu() {
     *) echo '输入无效，未修改开机自启。' >&2; return 1 ;;
   esac
   if [[ "$choice" == on ]]; then
-    prepare_dependencies || return $?
+    prepare_dependencies boot || return $?
+  else
+    require_tools grep || return $?
   fi
   lock_management
   if [[ "$choice" == on ]]; then
     "$PYTHON" "$ROOT/scripts/certificate.py" prepare-cron 9>&- || return 1
   fi
   # Share a per-user lock with both client boot and certificate cron updates.
-  [[ -n "$PYTHON" ]] || require_python
+  [[ -n "$PYTHON" ]] || require_python basic
   local cron_home
   cron_home="$("$PYTHON" -c 'import os,pwd; print(pwd.getpwuid(os.geteuid()).pw_dir)')" || return 1
   exec 8<"$cron_home"
@@ -87,6 +94,7 @@ PYCRON
 }
 
 check_platform() {
+  require_tools uname || return $?
   [[ "$(uname -s)" == Linux && "$(uname -m)" == x86_64 ]] || {
     echo '本项目仅支持 Linux x86_64。' >&2; return 1;
   }
@@ -102,6 +110,10 @@ prepare_firewall() {
   "$PYTHON" "$ROOT/scripts/firewall.py" start "$@" 9>&-
 }
 start_services() {
+  check_platform
+  prepare_dependencies
+  lock_management
+  prepare_firewall
   local certificate_checked=0
   "$PYTHON" - "$ROOT" <<'PYLOGS' || return $?
 import sys
@@ -129,6 +141,8 @@ PYLOGS
   fi
 }
 stop_server() {
+  require_python
+  lock_management
   local result=0
   "$PYTHON" "$ROOT/scripts/certificate.py" pause 9>&- || result=$?
   "$PYTHON" "$ROOT/scripts/service.py" stop all 9>&- || result=$?
@@ -149,13 +163,14 @@ PYACCESS
 }
 case "$cmd" in start|stop|restart|boot) trap refresh_information_access EXIT ;; esac
 case "$cmd" in
-  start) check_platform; prepare_dependencies; lock_management; prepare_firewall; start_services ;;
-  stop) require_python; lock_management; stop_server ;;
-  restart) check_platform; require_python; lock_management; stop_server; prepare_dependencies; prepare_firewall; start_services ;;
-  status) require_python; "$PYTHON" "$ROOT/scripts/service.py" status all 9>&- ;;
+  start) start_services ;;
+  stop) stop_server ;;
+  restart) stop_server; start_services ;;
+  status) require_python basic; "$PYTHON" "$ROOT/scripts/service.py" status all 9>&- ;;
   boot) boot_menu ;;
   log)
     (($# == 0)) || { echo 'log 不接受参数，直接执行 bash ./server.sh log。' >&2; exit 1; }
+    require_tools tail
     echo '选择要查看的日志：'
     echo '  0) 全部'
     echo '  1) VLESS'
@@ -226,6 +241,7 @@ sys.stdout.write('\n'.join(values)+'\n')
 PYLINKS
     ;;
   help|-h|--help)
+    require_tools cat
     cat <<'HELP'
 用法：sudo bash ./server.sh <命令>
 root 用户可省略 sudo。

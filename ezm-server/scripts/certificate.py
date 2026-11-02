@@ -184,6 +184,8 @@ def tool():
         if venv.exists():
             shutil.rmtree(venv)
         print('在项目运行目录安装 Certbot ' + CERTBOT_VERSION + '，不修改系统 Python。', flush=True)
+        run(['bash', '-c', 'source "$1"; PYTHON="$2"; prepare_python_venv',
+             'bash', ROOT / 'scripts/dependencies.sh', sys.executable])
         run([sys.executable, '-m', 'venv', '--without-pip', venv])
         # Debian minimal images may omit ensurepip. Bootstrap a verified PyPI wheel
         # in this local environment rather than installing system packages.

@@ -2,10 +2,13 @@
 # 读取当前线路，生成 mihomo 配置。无效链接保留监听并拒绝转发。
 set -euo pipefail
 export PYTHONDONTWRITEBYTECODE=1
-ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
+ROOT="$(cd -- "${BASH_SOURCE[0]%/*}/.." && pwd -P)"
 source "$ROOT/scripts/terminal-env.sh"
 _mihomo_remove_preload "$ROOT"
 unset HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy NO_PROXY no_proxy
+source "$ROOT/scripts/dependencies.sh"
+# Managed starts have already prepared these dependencies in start_proxy.
+if [[ "${1:-}" != --managed ]]; then client_dependencies service; fi
 CORE="${ROOT}/bin/mihomo_1.19.33"
 CONFIG="$ROOT/runtime/mihomo.json"
 ACTIVE="$ROOT/config/active.txt"

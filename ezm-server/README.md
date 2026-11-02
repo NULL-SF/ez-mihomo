@@ -139,14 +139,14 @@ UUID、密码和混淆密码自动生成，启停不更换这些信息。链接�
 
 ## 5 迁移
 
-若尚未安装 curl 或系统 CA 信任证书，先按系统安装下载工具：
+若尚未安装下载和解压工具，先按系统准备（root 用户可省略 sudo）：
 
 ```bash
 # Debian / Ubuntu
-sudo apt-get update && sudo apt-get install -y curl ca-certificates
+sudo apt-get update && sudo apt-get install -y curl ca-certificates tar gzip
 
 # Fedora / RHEL 系
-sudo dnf install -y curl ca-certificates
+sudo dnf install -y curl ca-certificates tar gzip
 # 使用 yum 的系统将 dnf 换成 yum
 ```
 
