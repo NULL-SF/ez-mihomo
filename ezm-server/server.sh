@@ -87,11 +87,11 @@ print(line.replace('%',r'\%'))
 PYCRON
 )" || return 1
     { [[ -z "$current" ]] || printf '%s\n' "$current"; printf '%s\n' "$entry"; } | crontab - || return 1
-    echo '开机自启已开启，下次开机会启动七种协议服务；当前监听不变。'
+    echo '开机自启已开启。已写入 crontab，下次开机会自动启动。'
   else
     if [[ -n "$current" ]]; then printf '%s\n' "$current" | crontab - || return 1
     elif [[ "$had_crontab" == 1 ]]; then crontab -r || return 1; fi
-    echo '开机自启已关闭，当前监听不变。'
+    echo '开机自启已关闭。已从 crontab 移除，下次开机不会自动启动。'
   fi
 }
 
