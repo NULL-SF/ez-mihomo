@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Generate mihomo server configurations in the current project directory."""
-import argparse, base64, ipaddress, json, os, secrets, shutil, subprocess, tempfile, uuid
+import argparse, base64, errno, ipaddress, json, os, secrets, shutil, socket, subprocess, tempfile, uuid
 from pathlib import Path
 from urllib.parse import quote, urlencode, urlsplit, parse_qsl, unquote
 import sys
@@ -8,7 +8,8 @@ import urllib.request
 from types import SimpleNamespace
 sys.dont_write_bytecode=True
 sys.path.insert(0,str(Path(__file__).resolve().parent))
-from service import ROOT, SPECS, stop, owned, use_original_certificates, information_group
+from service import ROOT, SPECS, stop, owned, transports, use_original_certificates, information_group, user_config_access
+from outbound import load_port as load_relay_port, render as render_outbound
 
 def write(path,value):
  path.write_text(value if isinstance(value,str) else json.dumps(value,ensure_ascii=False,indent=2)+'\n');path.chmod(0o600)
@@ -28,9 +29,8 @@ def load_ports(path, base_port=None):
   return {p:base_port+i for i,p in enumerate(SPECS)}
  directory=Path(path)
  if not directory.is_dir():raise ValueError('端口配置必须是目录，内含各协议的 .txt 文件')
- expected={p+'.txt' for p in SPECS}
- actual={f.name for f in directory.iterdir() if f.suffix=='.txt'}
- if actual!=expected:raise ValueError('端口目录必须包含且仅包含七种协议的 .txt 文件')
+ missing=[p+'.txt' for p in SPECS if not (directory/(p+'.txt')).is_file()]
+ if missing:raise ValueError('缺少协议端口文件：'+', '.join(missing))
  ports={}
  for protocol in SPECS:
   value=(directory/(protocol+'.txt')).read_text().strip()
@@ -41,8 +41,47 @@ def load_ports(path, base_port=None):
  if len(set(ports.values()))!=len(ports):raise ValueError('每种协议应使用不同的端口')
  return ports
 
+def owned_bindings(pid,listen):
+ # Inspect the live process rather than a config that may need rebuilding.
+ proc=Path(f'/proc/{pid}');inodes=set();bindings=set()
+ for fd in (proc/'fd').iterdir():
+  try:target=fd.readlink().as_posix()
+  except FileNotFoundError:continue
+  if target.startswith('socket:['):inodes.add(target[8:-1])
+ for network in ('tcp','udp'):
+  for suffix,family in (('',socket.AF_INET),('6',socket.AF_INET6)):
+   table=proc/f'net/{network}{suffix}'
+   if not table.exists():continue
+   for row in table.read_text().splitlines()[1:]:
+    fields=row.split()
+    if fields[9] not in inodes or fields[3]!=('0A' if network=='tcp' else '07'):continue
+    address,port=fields[1].split(':');raw=bytes.fromhex(address)
+    address=socket.inet_ntop(family,b''.join(raw[i:i+4][::-1] for i in range(0,len(raw),4)))
+    if address==listen or address in ('0.0.0.0','::') or listen in ('0.0.0.0','::'):
+     bindings.add((int(port,16),network))
+ return bindings
+
+def check_bindings(listen,ports,selected):
+ # A rebuild can reuse listeners owned by the nodes being replaced.
+ reusable=set()
+ for protocol in selected:
+  pid=owned(protocol)
+  if not pid:continue
+  try:reusable.update(owned_bindings(pid,listen))
+  except (OSError,ValueError,IndexError):pass
+ family=socket.AF_INET6 if ':' in listen else socket.AF_INET
+ for protocol in selected:
+  for network in transports(protocol):
+   with socket.socket(family,socket.SOCK_DGRAM if network=='udp' else socket.SOCK_STREAM) as probe:
+    if network=='tcp':probe.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
+    try:probe.bind((listen,ports[protocol]))
+    except OSError as error:
+     if error.errno==errno.EADDRINUSE and (ports[protocol],network) in reusable:continue
+     raise ValueError(f'{protocol}：端口 {ports[protocol]}/{network.upper()} 不可用：{error.strerror}；未重建节点。') from error
+
 def generate(a):
  selected=getattr(a,"protocols",tuple(SPECS))
+ relay_port=load_relay_port(write_default=True)
  server=host(a.server);name=host(a.tls_name or a.server)
  ipaddress.ip_address(a.listen)
  ports=load_ports(a.ports,a.base_port)
@@ -117,6 +156,7 @@ def generate(a):
     auth=uid+':'+password;q.update(congestion_control='cubic',alpn='h3')
    else:listener.update(secure,users={'node':password})
    doc={'mode':'rule','log-level':'warning','listeners':[listener],'rules':['MATCH,DIRECT'],'profile':{'store-selected':False,'store-fake-ip':False}}
+   doc=render_outbound(doc,relay_port)
    home=temp/'runtime'/p;home.mkdir(parents=True)
    if p=='vmess':
     link={'v':'2','ps':p,'add':server,'port':str(port),'id':uid,'aid':'0','scy':'auto','net':'tcp','type':'none','host':'','path':'','tls':'tls','sni':name}
@@ -135,27 +175,31 @@ def generate(a):
    home=temp/'runtime'/p
    result=subprocess.run([str(ROOT/'bin/mihomo_1.19.33'),'-t','-d',str(home),'-f',str(home/'config.json')],env=dict(os.environ,SAFE_PATHS=str(certs)),capture_output=True)
    if result.returncode:raise ValueError(p+'：mihomo 配置校验失败')
+  check_bindings(a.listen,ports,selected)
   (ROOT/'output').mkdir(parents=True,exist_ok=True)
   publications=[]
   if not getattr(a,'managed_source',False):
    publications=[(certs/name,ROOT/'runtime/certs/config/live/ezm-node'/name) for name in ('fullchain.pem','privkey.pem')]
   if not getattr(a,'repair',False):
-   publications.append((port_directory,ROOT/'config/ports'))
-  else:
-   for p in selected:
-    if owned(p):stop(p)
+   publications += [(port_directory/(p+'.txt'),ROOT/'config/ports'/(p+'.txt')) for p in SPECS]
   publications += [(temp/'runtime'/p,ROOT/'runtime'/p) for p in selected]
   (ROOT/'output/links').mkdir(parents=True,exist_ok=True,mode=0o700)
   publications += [(link_directory/(p+'.txt'),ROOT/'output/links'/(p+'.txt')) for p in selected]
   installed=[]
   try:
+   if getattr(a,'repair',False):
+    for p in selected:
+     if owned(p):
+      stop(p)
    for index,(staged,destination) in enumerate(publications):
     backup=temp/('previous-'+str(index));destination.parent.mkdir(parents=True,exist_ok=True)
     if destination.is_file():shutil.copy2(destination,backup)
     elif destination.exists():destination.rename(backup)
     installed.append((destination,backup))
     if destination.parent==ROOT/'output/links':
-     os.chown(staged,-1,information_group());staged.chmod(0o640)
+     os.chown(staged,-1,information_group());staged.chmod(0o660)
+    elif destination.parent==ROOT/'config/ports':
+     user_config_access(staged)
     staged.replace(destination)
   except BaseException:
    for destination,backup in reversed(installed):
@@ -217,20 +261,22 @@ def link_identity(value):
  parsed=urlsplit(value)
  return (parsed.scheme,unquote(parsed.netloc),parsed.path,sorted(parse_qsl(parsed.query,keep_blank_values=True)))
 
-def complete(protocol):
+def complete(protocol,port=None):
  config=ROOT/'runtime'/protocol/'config.json';link=ROOT/'output/links'/(protocol+'.txt')
  try:
+  if port is None:port=load_ports(ROOT/'config/ports')[protocol]
   doc=json.loads(config.read_text())
   if not isinstance(doc,dict) or not isinstance(doc.get('listeners'),list):return False
   if not doc['listeners'] or not isinstance(doc['listeners'][0],dict):return False
   if doc['listeners'][0].get('type')!=protocol:return False
+  if doc['listeners'][0].get('port')!=port:return False
   value=link.read_text().strip()
   if not value or len(value.splitlines())!=1:return False
   if link_identity(value)!=link_identity(node_link(protocol,doc)):return False
   result=subprocess.run([str(ROOT/'bin/mihomo_1.19.33'),'-t','-d',str(config.parent),'-f',str(config)],
    env=dict(os.environ,SAFE_PATHS=str(ROOT/'runtime/certs')),capture_output=True,timeout=15)
   return result.returncode==0
- except (OSError,ValueError,KeyError,TypeError,IndexError,StopIteration,subprocess.SubprocessError):
+ except (OSError,ValueError,KeyError,TypeError,AttributeError,IndexError,StopIteration,subprocess.SubprocessError):
   return False
 
 def detect_server():
@@ -295,17 +341,18 @@ def recover_certificate():
    if 'certificate' in listener and owned(protocol):stop(protocol)
 
 def initialize():
+ ports=load_ports(ROOT/'config/ports')
+ load_relay_port(write_default=True)
  recover_certificate()
  use_original_certificates()
- missing=[protocol for protocol in SPECS if not complete(protocol)]
+ missing=[protocol for protocol in SPECS if not complete(protocol,ports[protocol])]
  if not missing:return
  print('\n'+'='*60,flush=True)
  print('【警告】即将生成或重建节点',flush=True)
- print('节点配置或链接缺失、无效或不对应：'+', '.join(missing),flush=True)
+ print('节点配置、端口或链接缺失、无效或不一致：'+', '.join(missing),flush=True)
  print('受影响节点的认证信息（UUID、密码等）和链接将重新生成，旧链接将失效！',flush=True)
  print('完成后请在客户端导入 output/links/ 中对应的新链接。',flush=True)
  print('='*60+'\n',flush=True)
- load_ports(ROOT/'config/ports')
  existing=(ROOT/'runtime/certs/config/live/ezm-node/fullchain.pem').is_file() and (ROOT/'runtime/certs/config/live/ezm-node/privkey.pem').is_file()
  if existing:
   server=certificate_name()

@@ -14,6 +14,7 @@ source "${ROOT}/scripts/terminal-env.sh"
 _mihomo_remove_preload "$ROOT"
 unset -f _mihomo_remove_preload
 unset HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy NO_PROXY no_proxy
+unset _MIHOMO_PROXY_SNAPSHOT
 source "$ROOT/scripts/dependencies.sh"
 case "${1:-}" in
   status|test|terminal|log) client_dependencies "$1" ;;
@@ -443,7 +444,7 @@ if mode != "on":
     raise SystemExit(0)
 if mode == "on":
     block = f"""# ezm-client-proxy-terminal-begin
-if [[ -f {shlex.quote(root + '/config/terminal.on')} && -f {shlex.quote(root + '/proxy.env')} ]]; then
+if [[ "${{VSCODE_RESOLVING_ENVIRONMENT:-}}" != 1 && -f {shlex.quote(root + '/config/terminal.on')} && -f {shlex.quote(root + '/proxy.env')} ]]; then
   source {shlex.quote(root + '/proxy.env')}
 fi
 # ezm-client-proxy-terminal-end
@@ -596,6 +597,7 @@ main() {
     return 1
   fi
   case "${1:-}" in
+    ''|help|-h|--help) usage ;;
     start)
       start_proxy
       if [[ "${FRESH_START:-0}" -eq 1 ]]; then

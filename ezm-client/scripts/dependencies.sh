@@ -138,6 +138,7 @@ client_platform() {
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
   set -euo pipefail
   unset LD_PRELOAD HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy
+  unset _MIHOMO_PROXY_SNAPSHOT
   ROOT="${BASH_SOURCE[0]%/scripts/dependencies.sh}"
   [[ "$EUID" == 0 ]] || exit 1
   case "${1:-}" in prepare|boot) client_dependencies "$1" ;; *) exit 1 ;; esac

@@ -2,8 +2,10 @@
 # VPS 节点管理入口：mihomo 配置，版本固定，状态与配置分开存放。
 set -euo pipefail
 export PYTHONDONTWRITEBYTECODE=1
-# Do not let a client ProxyChains preload redirect server initialization probes.
-unset LD_PRELOAD
+# Management uses explicit egress configuration, not inherited shell proxies.
+unset LD_PRELOAD HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy NO_PROXY no_proxy
+unset PROXYCHAINS_CONF_FILE PROXYCHAINS_QUIET_MODE
+unset _MIHOMO_PROXY_SNAPSHOT
 ROOT="${BASH_SOURCE[0]%/*}"
 [[ "$ROOT" != "${BASH_SOURCE[0]}" ]] || ROOT=.
 ROOT="$(cd -- "$ROOT" && pwd -P)"

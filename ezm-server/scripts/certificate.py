@@ -210,7 +210,7 @@ def tool():
 def environment():
     env = dict(os.environ)
     for key in list(env):
-        if key.lower() in ('http_proxy', 'https_proxy', 'all_proxy', 'no_proxy') or key == 'LD_PRELOAD':
+        if key.lower() in ('http_proxy', 'https_proxy', 'all_proxy', 'no_proxy') or key in ('LD_PRELOAD', 'PROXYCHAINS_CONF_FILE', 'PROXYCHAINS_QUIET_MODE', '_MIHOMO_PROXY_SNAPSHOT'):
             env.pop(key)
     return env
 

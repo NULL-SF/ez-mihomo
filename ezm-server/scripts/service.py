@@ -60,33 +60,54 @@ def information_group():
  if runtime.is_dir() and runtime.stat().st_gid!=0:return runtime.stat().st_gid
  return ROOT.stat().st_gid
 
+def user_config_access(path,mode=0o644):
+ """Keep editable, non-secret input settings owned by the installing user."""
+ if path.is_symlink():return
+ if os.geteuid()==0:
+  owner=ROOT.stat()
+  ports=ROOT/'config/ports'
+  if ports.is_dir() and not ports.is_symlink() and ports.stat().st_uid!=0:
+   owner=ports.stat()
+  uid=int(os.environ.get('SUDO_UID',owner.st_uid))
+  gid=int(os.environ.get('SUDO_GID',owner.st_gid))
+  os.chown(path,uid,gid)
+ path.chmod(mode)
+
 def information_access():
  if os.geteuid()!=0:return
- # Grant the installing user group read access only to PID, log and link files.
+ # Editable configs/logs/links belong to the trusted installation group; PID stays read-only.
  group=information_group()
  def access(path,mode):
   if path.is_symlink():return
   os.chown(path,-1,group);path.chmod(mode)
+ ports=ROOT/'config/ports'
+ if ports.is_dir() and not ports.is_symlink():
+  user_config_access(ports,0o755)
+  for name in (*SPECS,'local_relay'):
+   path=ports/(name+'.txt')
+   if path.is_file():user_config_access(path)
  runtime=ROOT/'runtime'
  if runtime.is_dir() and not runtime.is_symlink():
   access(runtime,0o2750)
   for protocol in SPECS:
    directory=runtime/protocol
-   if directory.is_dir() and not directory.is_symlink():access(directory,0o2750)
-   pid=state_file(protocol)
-   if pid.is_file():access(pid,0o640)
+   if directory.is_dir() and not directory.is_symlink():
+    access(directory,0o2770)
+    for name in ('config.json','mihomo.pid'):
+     path=directory/name
+     if path.is_file():access(path,0o660 if name=='config.json' else 0o640)
  output=ROOT/'output'
  if output.is_dir():access(output,0o750)
  for directory in (ROOT/'log',output/'links'):
   if not directory.is_dir() or directory.is_symlink():continue
-  access(directory,0o2750)
+  access(directory,0o2770)
   for parent,dirs,files in os.walk(directory,followlinks=False):
    for name in dirs:
     path=Path(parent)/name
-    if not path.is_symlink():access(path,0o2750)
+    if not path.is_symlink():access(path,0o2770)
    for name in files:
     path=Path(parent)/name
-    if path.is_file() and not path.is_symlink():access(path,0o640)
+    if path.is_file() and not path.is_symlink():access(path,0o660)
 
 def command(p):
  return [str(ROOT/'bin/mihomo_1.19.33'),'-d',str(ROOT/'runtime'/p),'-f',str(ROOT/'runtime'/p/'config.json')]
@@ -120,9 +141,20 @@ def write_state(path,value):
  try:temporary.replace(path)
  finally:temporary.unlink(missing_ok=True)
 
+def deployed_port(protocol):
+ try:
+  port=entry(protocol)['port']
+ except PermissionError:return '需 sudo 查看'
+ except FileNotFoundError:return '未部署'
+ except (OSError,ValueError,KeyError,IndexError,TypeError):return '配置无效'
+ return str(port) if type(port) is int and 1<=port<=65535 else '配置无效'
+
+def transports(protocol):
+ return ['udp'] if protocol in ('hysteria2','tuic') else ['tcp','udp'] if protocol=='shadowsocks' else ['tcp']
+
 def entry(p):
  n=json.loads((ROOT/'runtime'/p/'config.json').read_text())['listeners'][0]
- return {'listen':n['listen'],'port':int(n['port']),'networks':['udp'] if p in ('hysteria2','tuic') else ['tcp','udp'] if p=='shadowsocks' else ['tcp']}
+ return {'listen':n['listen'],'port':int(n['port']),'networks':transports(p)}
 
 def preflight(p):
  item=entry(p)
@@ -162,7 +194,7 @@ def start(p):
  env=dict(os.environ,SAFE_PATHS=str(ROOT/'runtime/certs'))
  (ROOT/'runtime'/p).mkdir(parents=True,exist_ok=True)
  for k in list(env):
-  if k.lower() in ('http_proxy','https_proxy','all_proxy','no_proxy') or k=='LD_PRELOAD':env.pop(k,None)
+  if k.lower() in ('http_proxy','https_proxy','all_proxy','no_proxy') or k in ('LD_PRELOAD','PROXYCHAINS_CONF_FILE','PROXYCHAINS_QUIET_MODE','_MIHOMO_PROXY_SNAPSHOT'):env.pop(k,None)
  with (ROOT/'log'/(p+'.log')).open('ab') as log:
   child=subprocess.Popen(command(p),cwd=ROOT,env=env,stdin=subprocess.DEVNULL,stdout=log,stderr=log,start_new_session=True)
   state=state_file(p)
@@ -205,8 +237,10 @@ if __name__=='__main__':
   if a.action=='run':
    if a.protocol=='all':raise ValueError('run 只接受一个协议')
    if not (ROOT/'runtime'/a.protocol/'config.json').is_file():raise ValueError('缺少服务端配置，请执行 sudo bash ./server.sh start 自动初始化（root 可省略 sudo）')
+   from outbound import synchronize
+   synchronize(protocols)
    for key in list(os.environ):
-    if key.lower() in ('http_proxy','https_proxy','all_proxy','no_proxy') or key=='LD_PRELOAD':os.environ.pop(key,None)
+    if key.lower() in ('http_proxy','https_proxy','all_proxy','no_proxy') or key in ('LD_PRELOAD','PROXYCHAINS_CONF_FILE','PROXYCHAINS_QUIET_MODE','_MIHOMO_PROXY_SNAPSHOT'):os.environ.pop(key,None)
    os.environ['SAFE_PATHS']=str(ROOT/'runtime/certs');(ROOT/'runtime'/a.protocol).mkdir(parents=True,exist_ok=True)
    os.chdir(ROOT);os.execv(command(a.protocol)[0],command(a.protocol))
   started=[]
@@ -216,17 +250,22 @@ if __name__=='__main__':
    if a.action in ('start','restart'):
     for p in protocols:
      if not (ROOT/'runtime'/p/'config.json').is_file():raise ValueError('缺少服务端配置，请执行 sudo bash ./server.sh start 自动初始化（root 可省略 sudo）')
+    from outbound import synchronize
+    synchronize(protocols)
     for p in protocols:
      if start(p):started.append(p)
    if a.action=='status':
+    from outbound import describe, load_port
+    print(describe(load_port(check_ports=False)))
     try:
      result=subprocess.run([command(protocols[0])[0],'-v'],capture_output=True,text=True,check=True,timeout=3)
      version=re.search(r'\bv[0-9][^\s]*',result.stdout)
      print('核心：mihomo '+(version.group() if version else '版本未知'))
     except (OSError,subprocess.SubprocessError):print('核心：不可用，请检查 bin/mihomo_1.19.33')
     for p in protocols:
-     try:print(p+(': 运行中' if owned(p,report_permission=True) else ': 未运行'))
-     except PermissionError:print(p+': 无法确认状态（进程信息或 PID 文件读取受限）')
+     try:state='运行中' if owned(p,report_permission=True) else '未运行'
+     except PermissionError:state='无法确认状态（需 sudo 查看）'
+     print(f'{p}: {state}；端口 {deployed_port(p)}；'+ '/'.join(n.upper() for n in transports(p)))
   except BaseException:
    for p in reversed(started):stop(p)
    raise

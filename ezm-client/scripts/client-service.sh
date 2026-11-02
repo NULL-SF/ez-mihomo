@@ -6,6 +6,7 @@ ROOT="$(cd -- "${BASH_SOURCE[0]%/*}/.." && pwd -P)"
 source "$ROOT/scripts/terminal-env.sh"
 _mihomo_remove_preload "$ROOT"
 unset HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy NO_PROXY no_proxy
+unset _MIHOMO_PROXY_SNAPSHOT
 source "$ROOT/scripts/dependencies.sh"
 # Managed starts have already prepared these dependencies in start_proxy.
 if [[ "${1:-}" != --managed ]]; then client_dependencies service; fi
