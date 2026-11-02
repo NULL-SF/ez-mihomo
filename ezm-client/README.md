@@ -335,9 +335,10 @@ bash <(curl -fsSL https://raw.githubusercontent.com/NULL-SF/ez-mihomo/main/insta
 cd ezm-client
 ```
 
-使用时至少填好 `config/active.txt` 指定线路的链接；其他线路的链接可稍后再填。确认 `config/port.txt` 后，先启动代理：
+使用时至少填好 `config/active.txt` 指定线路的链接，其他线路的链接可稍后再填；同时再次确认 `config/port.txt` 。随后确保赋予项目可执行权限，启动代理。
 
 ```bash
+chmod +x client.sh scripts/*.sh bin/mihomo_1.19.33
 bash ./client.sh start
 ```
 

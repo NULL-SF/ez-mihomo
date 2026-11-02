@@ -158,10 +158,11 @@ bash <(curl -fsSL https://raw.githubusercontent.com/NULL-SF/ez-mihomo/main/insta
 
 运行后选择 `1`（服务端），将独立项目下载到当前目录的 `ezm-server/`。
 
-下载后进入目录并手动启动：
+下载或复制后进入目录并手动启动。手动复制或上传可能丢失执行权限，启动前统一补齐：
 
 ```bash
 cd ezm-server
+chmod +x server.sh scripts/*.sh bin/mihomo_1.19.33
 sudo bash ./server.sh start
 ```
 
