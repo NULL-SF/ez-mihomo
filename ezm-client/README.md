@@ -133,7 +133,7 @@ source ./proxy.env
 | 命令 | 说明 |
 |---|---|
 | `source ./proxy.env` | 为当前终端设置代理环境并启用 ProxyChains；混合代理入口未就绪时会报错。 |
-| `source ./proxy.env off` | 在启用代理的同一 Shell 中取消代理注入，恢复启用前保存的环境；不停止 ezm-client 服务。 |
+| `source ./proxy.env off` | 在启用代理的同一 Shell 中清除代理注入，恢复启用代理前的终端环境；不停止 ezm-client 服务。 |
 
 `source` 不启动服务，`stop` 也不会清除已有终端的代理环境。重复 `source` 不会覆盖第一次保存的环境。
 
@@ -142,7 +142,7 @@ source ./proxy.env
 | 命令 | 说明 |
 |---|---|
 | `bash ./client.sh boot` | 选择开启或关闭开机自启，修改当前用户的 crontab，不影响当前服务。 |
-| `bash ./client.sh terminal` | 选择开启或关闭新交互终端的自动接入，修改当前用户的 `.bashrc` 和项目内的启用标记；不影响已打开的终端，也不启停 ezm-client 服务。 |
+| `bash ./client.sh terminal` | 选择开启或关闭新终端打开时的代理自动接入；不影响已打开的终端，也不启停 ezm-client 服务。 |
 
 `boot` 控制开机启动服务，`terminal` 控制新终端自动执行 `source`。若服务未启动，新终端的自动接入会报错；启动服务后，在该终端重新 `source` 即可。
 
@@ -350,7 +350,7 @@ bash ./client.sh boot
 
 在 `boot` 的提示中选择开启。它只登记开机任务；当前代理由 `start` 启动，启动后保持后台运行。
 
-若新打开的终端也要自动接入代理，再执行 `bash ./client.sh terminal` 并选择开启。这一步设置该用户的 `~/.bashrc` 和项目内的启用标记，不启动代理。只让当前窗口接入代理时，执行 `source ./proxy.env`；关闭当前窗口的代理时，执行 `source ./proxy.env off`。
+若希望今后打开新终端时自动接入代理，执行 `bash ./client.sh terminal` 并选择开启。若希望只代理当前终端，执行 `source ./proxy.env`。若希望恢复当前终端在接入代理前的环境，执行 `source ./proxy.env off`。
 
 ## 7 Codex 适配
 
