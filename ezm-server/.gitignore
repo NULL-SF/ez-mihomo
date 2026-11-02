@@ -1,7 +1,3 @@
-/config/*
-!/config/ports/
-/config/ports/*
-!/config/ports/*.txt
 /runtime/
 /log/
 /output/

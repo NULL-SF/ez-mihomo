@@ -406,6 +406,9 @@ terminal_enabled() {
 
 set_terminal() {
   local mode="$1"
+  if [[ "$mode" == "on" ]]; then
+    mkdir -p "${TERMINAL_FLAG%/*}" || return 1
+  fi
   python3 - "$BASHRC" "$mode" "$ROOT" <<'PY'
 import os, pathlib, shlex, sys, tempfile
 path, mode, root = sys.argv[1:]
