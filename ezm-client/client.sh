@@ -507,12 +507,12 @@ boot_mihomo() {
       client_dependencies boot
       lock_management
       set_cron on
-      note "开机自启已开启。已写入 crontab，下次开机会自动启动。这次没有启动监听。"
+      note "开机自启已开启。已写入 crontab，下次开机会自动启动。"
       ;;
     2|off|关闭)
       lock_management
       set_cron off
-      note "开机自启已关闭。crontab 中的登记已删除。这次没有停止监听。下次开机不会自动启动。"
+      note "开机自启已关闭。已从 crontab 移除，下次开机不会自动启动。"
       ;;
     *)
       echo "已取消，未作更改。"
