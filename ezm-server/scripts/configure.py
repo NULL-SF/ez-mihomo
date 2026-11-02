@@ -36,19 +36,21 @@ def load_ports(path, base_port=None):
   if file.exists() or file.is_symlink():
    value=file.read_text().strip()
   else:
+   value=''
+  if not value:
    value=str(11801+index)
-   missing.append(protocol)
+   missing.append((protocol,'w' if file.exists() else 'x'))
   if not value.isascii() or not value.isdecimal():raise ValueError(protocol+'：端口文件应只填写一个整数')
   number=int(value)
   if not 1024<=number<=65535:raise ValueError(protocol+'：服务端口必须在 1024—65535 内')
   ports[protocol]=number
  if len(set(ports.values()))!=len(ports):raise ValueError('每种协议应使用不同的端口')
- # Validate the complete set before publishing defaults; preserve existing inputs.
+ # Validate the complete set before filling missing or empty inputs.
  if missing:
   directory.mkdir(parents=True,exist_ok=True)
-  for protocol in missing:
+  for protocol,mode in missing:
    file=directory/(protocol+'.txt')
-   with file.open('x') as stream:stream.write(str(ports[protocol])+'\n')
+   with file.open(mode) as stream:stream.write(str(ports[protocol])+'\n')
    user_config_access(file)
  return ports
 
