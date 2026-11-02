@@ -5,16 +5,14 @@
 # 操作结果写入 log/mihomo.log。询问与 status 只显示在终端。
 set -euo pipefail
 export PYTHONDONTWRITEBYTECODE=1
+# 管理命令及核心使用自身配置，不继承终端的代理与预加载。
+unset LD_PRELOAD HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy NO_PROXY no_proxy
+unset PROXYCHAINS_CONF_FILE PROXYCHAINS_QUIET_MODE _MIHOMO_PROXY_SNAPSHOT
 
 ROOT="${BASH_SOURCE[0]%/*}"
 [[ "$ROOT" != "${BASH_SOURCE[0]}" ]] || ROOT=.
 ROOT="$(cd -- "$ROOT" && pwd -P)"
-# 管理命令及其启动的核心不继承终端代理，避免自代理。
 source "${ROOT}/scripts/terminal-env.sh"
-_mihomo_remove_preload "$ROOT"
-unset -f _mihomo_remove_preload
-unset HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy NO_PROXY no_proxy
-unset _MIHOMO_PROXY_SNAPSHOT
 source "$ROOT/scripts/dependencies.sh"
 case "${1:-}" in
   status|test|terminal|log) client_dependencies "$1" ;;
