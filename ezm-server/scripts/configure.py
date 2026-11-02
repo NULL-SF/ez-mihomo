@@ -28,17 +28,28 @@ def load_ports(path, base_port=None):
   if not 1024<=base_port<=65536-len(SPECS):raise ValueError('连续端口范围必须在 1024—65535 内')
   return {p:base_port+i for i,p in enumerate(SPECS)}
  directory=Path(path)
- if not directory.is_dir():raise ValueError('端口配置必须是目录，内含各协议的 .txt 文件')
- missing=[p+'.txt' for p in SPECS if not (directory/(p+'.txt')).is_file()]
- if missing:raise ValueError('缺少协议端口文件：'+', '.join(missing))
+ if directory.exists() and not directory.is_dir():raise ValueError('端口配置必须是目录，内含各协议的 .txt 文件')
+ missing=[]
  ports={}
- for protocol in SPECS:
-  value=(directory/(protocol+'.txt')).read_text().strip()
+ for index,protocol in enumerate(SPECS):
+  file=directory/(protocol+'.txt')
+  if file.exists() or file.is_symlink():
+   value=file.read_text().strip()
+  else:
+   value=str(11801+index)
+   missing.append(protocol)
   if not value.isascii() or not value.isdecimal():raise ValueError(protocol+'：端口文件应只填写一个整数')
   number=int(value)
   if not 1024<=number<=65535:raise ValueError(protocol+'：服务端口必须在 1024—65535 内')
   ports[protocol]=number
  if len(set(ports.values()))!=len(ports):raise ValueError('每种协议应使用不同的端口')
+ # Validate the complete set before publishing defaults; preserve existing inputs.
+ if missing:
+  directory.mkdir(parents=True,exist_ok=True)
+  for protocol in missing:
+   file=directory/(protocol+'.txt')
+   with file.open('x') as stream:stream.write(str(ports[protocol])+'\n')
+   user_config_access(file)
  return ports
 
 def owned_bindings(pid,listen):
