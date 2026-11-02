@@ -16,8 +16,17 @@ MARK = 'ezm-server-' + hashlib.sha256(str(ROOT).encode()).hexdigest()[:12] + ':'
 
 
 def ufw(*args):
-    result = subprocess.run(['ufw', *args], env=dict(os.environ, LC_ALL='C'),
-                            check=True, capture_output=True, text=True, timeout=30)
+    command = ['ufw', *args]
+    try:
+        result = subprocess.run(command, env=dict(os.environ, LC_ALL='C'),
+                                check=True, capture_output=True, text=True, timeout=30)
+    except subprocess.CalledProcessError as error:
+        detail = (error.stderr or '').strip() or (error.stdout or '').strip()
+        raise ValueError(f'{shlex.join(command)} 执行失败（退出码 {error.returncode}）'
+                         + (f'：\n{detail}' if detail else '')) from error
+    except subprocess.TimeoutExpired as error:
+        raise ValueError(f'{shlex.join(command)} 执行超时；规则可能已部分写入，'
+                         '请检查 ufw show added 后重试。') from error
     return result.stdout
 
 
@@ -85,8 +94,9 @@ def configure(action, quiet=False):
     for port in sorted(required):
         if port in existing or port.split('/')[0] in existing:
             continue
-        # insert cannot overwrite an existing rule's comment (plain allow can).
-        ufw('insert', '1', 'allow', port, 'comment', MARK + port)
+        # prepend works with empty IPv4/IPv6 lists and, unlike plain allow,
+        # does not overwrite an existing rule's comment.
+        ufw('prepend', 'allow', port, 'comment', MARK + port)
         added.append(port)
     # Remove only old project rules, including ports changed since last start.
     for rule in current:
