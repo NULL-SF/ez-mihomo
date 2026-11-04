@@ -335,7 +335,7 @@ sudo dnf install -y curl ca-certificates tar gzip
 bash <(curl -fsSL https://raw.githubusercontent.com/NULL-SF/ez-mihomo/main/install.sh)
 ```
 
-选择 `2`（客户端），安装到当前目录的 `ezm-client/`。注意确保目录完整路径无空格，防止 ProxyChains 工具失效。
+选择 `2`（客户端），安装到当前目录的 `ezm-client/`。注意确保目录完整路径不含空白字符或冒号，防止 ProxyChains 工具失效。
 
 下载后进入目录，并赋予项目可执行权限：
 
