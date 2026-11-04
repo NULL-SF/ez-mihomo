@@ -120,7 +120,7 @@ source ./proxy.env
 
 | 命令 | 说明 |
 |---|---|
-| `bash ./client.sh status` | 查看线路、端口监听、进程 PID、开机自启和终端自动接入设置，不修改配置。 |
+| `bash ./client.sh status` | 查看配置线路、端口监听、进程 PID、开机自启和终端自动接入设置，不修改配置。 |
 | `bash ./client.sh test` | 分别测试 HTTP 和 SOCKS 代理，均访问 `https://www.google.com`，显示连接结果和首字节耗时；任一代理测试失败，命令返回失败。不改线路，也不启停监听。 |
 | `bash ./client.sh log` | 持续查看 `log/mihomo.log`，按 `Ctrl+C` 退出查看。 |
 

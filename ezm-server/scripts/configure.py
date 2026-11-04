@@ -199,7 +199,7 @@ def generate(a):
  print('运行配置目录：'+str(ROOT/'runtime'))
  print('节点链接目录：'+str(ROOT/'output/links'))
  print('\n【节点链接已更新】'+', '.join(selected),flush=True)
- print('请在客户端导入 output/links/ 中对应的新链接，旧链接不再可用。\n',flush=True)
+ print('请在客户端导入 output/links/ 中对应的新链接或更新订阅，旧节点链接不再可用。\n',flush=True)
  if a.self_signed:print('自签名仅用于测试：客户端必须导入 runtime/certs/config/live/ezm-node/fullchain.pem 作为信任证书，分享链接不包含该证书。')
 def export_links():
  from outbound import atomic_write
@@ -296,7 +296,7 @@ def detect_server():
    with opener.open(endpoint,timeout=12) as response:value=response.read(128).decode().strip()
    address=ipaddress.ip_address(value)
    if address.version==4 and address.is_global:
-    print('提示：使用 IPv4 出口地址；若处于 NAT 后，需确认公网 TCP 80 和节点端口已映射到本机。',flush=True)
+    print('提示：使用 IPv4 出口地址；若处于 NAT 后，需确认公网 TCP 80、节点端口和订阅端口已映射到本机。',flush=True)
     return str(address)
   except (OSError,ValueError,UnicodeError):continue
  raise ValueError('未找到本机公网地址，也无法探测 IPv4 出口；请检查网络和地址配置。')
@@ -342,7 +342,7 @@ def initialize():
  print('【警告】即将生成或重建节点',flush=True)
  print('节点配置或端口缺失、无效或不一致：'+', '.join(missing),flush=True)
  print('受影响节点的认证信息（UUID、密码等）和链接将重新生成，旧链接将失效！',flush=True)
- print('完成后请在客户端导入 output/links/ 中对应的新链接。',flush=True)
+ print('完成后请在客户端导入 output/links/ 中对应的新链接或更新订阅。',flush=True)
  print('='*60+'\n',flush=True)
  existing=(ROOT/'runtime/certs/config/live/ezm-node/fullchain.pem').is_file() and (ROOT/'runtime/certs/config/live/ezm-node/privkey.pem').is_file()
  if existing:

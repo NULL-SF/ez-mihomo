@@ -26,7 +26,7 @@ case "${1:-}" in
   stop) client_dependencies stop ;;
   status|test|terminal|log) client_dependencies "$1" ;;
   boot) client_dependencies boot-control ;;
-  __write_proxychains) client_dependencies proxychains ;;
+  __write_proxychains) client_dependencies proxychains >&2 ;;
   ''|help|-h|--help) client_dependencies help ;;
 esac
 ACTIVE="${ROOT}/config/protocol.activate"
@@ -358,7 +358,7 @@ report_connection() {
 switch_mihomo() {
   local current choice previous
   current="$(current_profile)"
-  echo "当前线路: ${current}（$(core_for "$current")）"
+  echo "当前配置线路: ${current}（$(core_for "$current")）"
   echo "  1) vless"
   echo "  2) hysteria2"
   echo "  3) vmess"
@@ -367,7 +367,7 @@ switch_mihomo() {
   echo "  6) tuic"
   echo "  7) anytls"
   printf '输入序号或线路名：'
-  read -r choice
+  read -r choice || { echo "已取消，未作更改。"; return 0; }
   case "$choice" in
     1|vless) choice="vless" ;;
     2|hysteria2) choice="hysteria2" ;;
@@ -482,7 +482,7 @@ terminal_mihomo() {
   echo "  1) 开启"
   echo "  2) 关闭"
   printf '输入序号：'
-  read -r choice
+  read -r choice || { echo "已取消，未作更改。"; return 0; }
   case "$choice" in
     1|on|开启)
       lock_management
@@ -512,7 +512,7 @@ boot_mihomo() {
   echo "  1) 开启"
   echo "  2) 关闭"
   printf '输入序号：'
-  read -r choice
+  read -r choice || { echo "已取消，未作更改。"; return 0; }
   case "$choice" in
     1|on|开启)
       client_dependencies boot
@@ -535,7 +535,7 @@ boot_mihomo() {
 status_mihomo() {
   local profile
   profile="$(current_profile)"
-  echo "线路: ${profile}（$(core_for "$profile")）"
+  echo "配置线路: ${profile}（$(core_for "$profile")）"
   if cron_enabled; then
     echo "开机自启: 开"
   else
@@ -592,10 +592,10 @@ usage() {
   start    按 config/protocol.activate 启动。已在监听时不重复启动。启动后保持后台运行
   stop     停止本项目核心及混合代理入口。依赖该代理的程序随即无法经该代理出网
   restart  关闭监听后按 config/protocol.activate 再启动，然后报告连接是否正常
-  status   查看线路、开机自启、终端自动接入代理与监听。不写入日志
+  status   查看配置线路、开机自启、终端自动接入代理与监听。不写入日志
   test     分别测试 HTTP 和 SOCKS 代理，均访问 ${PROBE_URL}，显示连接结果和首字节耗时。不改线路，也不启停监听
   switch   询问后切换 vless / hysteria2 / vmess / trojan / shadowsocks / tuic / anytls 并保留。选中当前线路时按重启处理。监听起来后报告连接是否正常
-  boot     只询问后开启或关闭开机自启。不启动、不停止当前监听
+  boot     询问后开启或关闭开机自启；开启时准备启动依赖。不启动、不停止当前监听
   terminal 询问后开启或关闭新终端自动接入代理。不开启、不关闭监听
   log      持续查看 ${LOG}
 EOF

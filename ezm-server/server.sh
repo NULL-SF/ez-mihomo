@@ -189,7 +189,7 @@ case "$cmd" in
     (($# == 0)) || { echo 'log 不接受参数，直接执行 bash ./server.sh log。' >&2; exit 1; }
     require_tools tail
     echo '选择要查看的日志：'
-    echo '  0) 全部'
+    echo '  0) 全部（节点、证书、订阅）'
     echo '  1) VLESS'
     echo '  2) VMess'
     echo '  3) Hysteria2'
@@ -263,8 +263,8 @@ PYLINKS
   help|-h|--help)
     require_tools cat
     cat <<'HELP'
-用法：sudo bash ./server.sh <命令>
-root 用户可省略 sudo。
+用法：bash ./server.sh <命令>
+start、stop、restart、boot 需要 root 权限，普通用户请在命令前加 sudo。
 
   start    启动
   stop     停止
