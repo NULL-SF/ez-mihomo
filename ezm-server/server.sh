@@ -220,8 +220,8 @@ case "$cmd" in
     exec tail -v -n 50 -F -- "${log_files[@]}"
     ;;
   links)
-    echo '选择要查看的节点链接：'
-    echo '  0) 全部'
+    echo '选择要查看的节点链接或订阅地址：'
+    echo '  0) 全部节点链接'
     echo '  1) VLESS'
     echo '  2) VMess'
     echo '  3) Hysteria2'
@@ -247,7 +247,7 @@ from service import SPECS
 names=(*SPECS,'subscription')
 if selected!='all' and selected not in names:
     sys.exit('未知协议。')
-protocols=names if selected=='all' else (selected,)
+protocols=tuple(SPECS) if selected=='all' else (selected,)
 try:
     values=[]
     for protocol in protocols:
@@ -270,7 +270,7 @@ root 用户可省略 sudo。
   stop     停止
   restart  重启
   status   查看状态
-  links    查看节点链接
+  links    查看节点链接或订阅地址
   log      持续查看日志
   boot     设置开机自启
 HELP
