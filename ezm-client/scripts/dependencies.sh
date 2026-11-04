@@ -19,7 +19,7 @@ client_packages() {
       ps) [[ "$CLIENT_MANAGER" == apt-get ]] && package=procps || package=procps-ng ;;
       awk) package=gawk ;;
       crontab) [[ "$CLIENT_MANAGER" == apt-get ]] && package=cron || package=cronie ;;
-      cat|tr|seq|sleep|nohup|date|mkdir|mktemp|mv|rm|uname) package=coreutils ;;
+      cat|tail|tr|seq|sleep|nohup|date|mkdir|mktemp|mv|rm|uname) package=coreutils ;;
       *) package="$tool" ;;
     esac
     [[ " ${CLIENT_PACKAGES[*]} " == *" $package "* ]] || CLIENT_PACKAGES+=("$package")
@@ -37,10 +37,10 @@ client_install_packages() {
   [[ -n "$CLIENT_MANAGER" ]] || { echo '无法自动安装：需要 apt-get、dnf 或 yum。' >&2; return 1; }
   printf '正在安装客户端依赖：%s\n' "${CLIENT_PACKAGES[*]}"
   if [[ "$CLIENT_MANAGER" == apt-get ]]; then
-    DEBIAN_FRONTEND=noninteractive apt-get update || return $?
-    DEBIAN_FRONTEND=noninteractive apt-get install -y "${CLIENT_PACKAGES[@]}" || return $?
+    sudo env DEBIAN_FRONTEND=noninteractive apt-get update || return $?
+    sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y "${CLIENT_PACKAGES[@]}" || return $?
   else
-    "$CLIENT_MANAGER" install -y "${CLIENT_PACKAGES[@]}" || return $?
+    sudo "$CLIENT_MANAGER" install -y "${CLIENT_PACKAGES[@]}" || return $?
   fi
 }
 client_cron_running() {
@@ -57,14 +57,14 @@ client_enable_cron() {
   local unit
   if command -v systemctl >/dev/null; then
     for unit in cron crond; do
-      if systemctl enable --now "$unit" && client_cron_running; then return 0; fi
+      if sudo systemctl enable --now "$unit" && client_cron_running; then return 0; fi
     done
   fi
   if command -v service >/dev/null; then
     if command -v update-rc.d >/dev/null; then
-      update-rc.d cron defaults && service cron start && client_cron_running && return 0
+      sudo update-rc.d cron defaults && sudo service cron start && client_cron_running && return 0
     elif command -v chkconfig >/dev/null; then
-      chkconfig crond on && service crond start && client_cron_running && return 0
+      sudo chkconfig crond on && sudo service crond start && client_cron_running && return 0
     fi
   fi
   echo '无法启用 cron，未登记开机自启；请检查系统服务管理器。' >&2
@@ -73,12 +73,14 @@ client_enable_cron() {
 client_dependencies() {
   local mode="${1:-check}" missing=() tool needs_install=0
   if [[ "$mode" == prepare && "$CLIENT_DEPENDENCIES_PREPARED" == 1 ]]; then return 0; fi
+  # Reuse start preparation so boot follows future startup dependency changes.
+  if [[ "$mode" == boot ]]; then client_dependencies prepare || return $?; fi
   local tools=(flock ps ss ip awk grep sed cat tr seq sleep nohup date mkdir mktemp mv rm)
   local needs_python=1 python_modules=basic
   case "$mode" in
     stop) tools=(flock ps ss grep sed tr sleep mkdir rm date); needs_python=0 ;;
     status) tools=(ss grep sed tr) ;;
-    test) tools=(curl awk mkdir date ss grep sed tr); needs_python=0 ;;
+    test) tools=(curl awk mkdir date ss grep sed tr) ;;
     terminal) tools=(flock grep mkdir date rm) ;;
     boot-control) tools=(flock grep mkdir date) ;;
     proxychains) tools=(flock mkdir mktemp mv rm cat) ;;
@@ -91,7 +93,7 @@ client_dependencies() {
   esac
   for tool in "${tools[@]}"; do command -v "$tool" >/dev/null || missing+=("$tool"); done
   [[ "$needs_python" == 0 ]] || client_python_ready "$python_modules" || missing+=("Python 3.9+ ($python_modules)")
-  if [[ "$mode" == prepare || "$mode" == test ]]; then
+  if [[ "$mode" == prepare || "$mode" == test || "$mode" == service ]]; then
     if [[ ! -s /etc/ssl/certs/ca-certificates.crt && ! -s /etc/pki/tls/certs/ca-bundle.crt && ! -s /etc/ssl/cert.pem ]]; then
       needs_install=1
       missing+=(ca-certificates)
@@ -101,27 +103,17 @@ client_dependencies() {
     [[ "$mode" != prepare ]] || CLIENT_DEPENDENCIES_PREPARED=1
     return 0
   fi
-  if [[ "$mode" != prepare && "$mode" != boot ]]; then
-    printf '缺少客户端依赖：%s；请先执行 bash ./client.sh start 准备依赖。\n' "${missing[*]}" >&2
-    return 1
-  fi
-  if [[ "$EUID" != 0 ]]; then
-    command -v sudo >/dev/null || { echo '缺少依赖且未安装 sudo，请由管理员准备依赖。' >&2; return 1; }
-    # Elevate only system preparation; the caller keeps its user, HOME and crontab.
-    sudo bash "$ROOT/scripts/dependencies.sh" "$mode" || return $?
-  else
-    client_manager
-    client_packages "${tools[@]}"
-    [[ "$needs_python" == 0 ]] || client_python_ready "$python_modules" || CLIENT_PACKAGES+=(python3)
-    [[ "$needs_install" == 0 ]] || CLIENT_PACKAGES+=(ca-certificates)
-    client_install_packages || return $?
-    [[ "$mode" != boot ]] || client_enable_cron || return $?
-  fi
+  client_manager
+  client_packages "${tools[@]}"
+  [[ "$needs_python" == 0 ]] || client_python_ready "$python_modules" || CLIENT_PACKAGES+=(python3)
+  [[ "$needs_install" == 0 ]] || CLIENT_PACKAGES+=(ca-certificates)
+  client_install_packages || return $?
+  [[ "$mode" != boot ]] || client_enable_cron || return $?
   for tool in "${tools[@]}"; do
     command -v "$tool" >/dev/null || { echo "安装后仍缺少 $tool。" >&2; return 1; }
   done
   [[ "$needs_python" == 0 ]] || client_python_ready "$python_modules" || { echo "需要可用的 Python 3.9+ ($python_modules)；当前软件源或 Python 环境不满足要求。" >&2; return 1; }
-  if [[ "$mode" == prepare || "$mode" == test ]]; then
+  if [[ "$mode" == prepare || "$mode" == test || "$mode" == service ]]; then
     [[ -s /etc/ssl/certs/ca-certificates.crt || -s /etc/pki/tls/certs/ca-bundle.crt || -s /etc/ssl/cert.pem ]] || {
       echo '系统 CA 证书仍不可用，请修复 ca-certificates。' >&2; return 1;
     }
@@ -140,6 +132,5 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
   unset LD_PRELOAD HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy
   unset _MIHOMO_PROXY_SNAPSHOT
   ROOT="${BASH_SOURCE[0]%/scripts/dependencies.sh}"
-  [[ "$EUID" == 0 ]] || exit 1
-  case "${1:-}" in prepare|boot) client_dependencies "$1" ;; *) exit 1 ;; esac
+  client_dependencies "${1:-prepare}"
 fi

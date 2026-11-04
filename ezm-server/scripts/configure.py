@@ -2,17 +2,17 @@
 """Generate mihomo server configurations in the current project directory."""
 import argparse, base64, errno, ipaddress, json, os, secrets, shutil, socket, subprocess, tempfile, uuid
 from pathlib import Path
-from urllib.parse import quote, urlencode, urlsplit, parse_qsl, unquote
+from urllib.parse import quote, urlencode
 import sys
 import urllib.request
 from types import SimpleNamespace
 sys.dont_write_bytecode=True
 sys.path.insert(0,str(Path(__file__).resolve().parent))
-from service import ROOT, SPECS, stop, owned, transports, use_original_certificates, information_group, user_config_access
+from service import ROOT, SPECS, stop, owned, transports, use_original_certificates, user_config_access
 from outbound import load_port as load_relay_port, render as render_outbound
 
 def write(path,value):
- path.write_text(value if isinstance(value,str) else json.dumps(value,ensure_ascii=False,indent=2)+'\n');path.chmod(0o600)
+ path.write_text(value if isinstance(value,str) else json.dumps(value,ensure_ascii=False,indent=2)+'\n');user_config_access(path,0o600)
 def run(*args):
  return subprocess.run(args,check=True,capture_output=True,text=True).stdout.strip()
 def host(value):
@@ -24,35 +24,9 @@ def host(value):
   return value
 
 def load_ports(path, base_port=None):
- if base_port is not None:
-  if not 1024<=base_port<=65536-len(SPECS):raise ValueError('连续端口范围必须在 1024—65535 内')
-  return {p:base_port+i for i,p in enumerate(SPECS)}
- directory=Path(path)
- if directory.exists() and not directory.is_dir():raise ValueError('端口配置必须是目录，内含各协议的 .txt 文件')
- missing=[]
- ports={}
- for index,protocol in enumerate(SPECS):
-  file=directory/(protocol+'.txt')
-  if file.exists() or file.is_symlink():
-   value=file.read_text().strip()
-  else:
-   value=''
-  if not value:
-   value=str(11801+index)
-   missing.append((protocol,'w' if file.exists() else 'x'))
-  if not value.isascii() or not value.isdecimal():raise ValueError(protocol+'：端口文件应只填写一个整数')
-  number=int(value)
-  if not 1024<=number<=65535:raise ValueError(protocol+'：服务端口必须在 1024—65535 内')
-  ports[protocol]=number
- if len(set(ports.values()))!=len(ports):raise ValueError('每种协议应使用不同的端口')
- # Validate the complete set before filling missing or empty inputs.
- if missing:
-  directory.mkdir(parents=True,exist_ok=True)
-  for protocol,mode in missing:
-   file=directory/(protocol+'.txt')
-   with file.open(mode) as stream:stream.write(str(ports[protocol])+'\n')
-   user_config_access(file)
- return ports
+ from ports import load
+ values=load(path,base_port)
+ return {p:values[p] for p in SPECS}
 
 def owned_bindings(pid,listen):
  # Inspect the live process rather than a config that may need rebuilding.
@@ -103,7 +77,7 @@ def generate(a):
  if not 1<=a.reality_port<=65535:raise ValueError('REALITY 目标端口无效')
  reality=host(a.reality_target)
  reality_address='['+reality+']' if ':' in reality else reality
- if not getattr(a,'repair',False) and any((ROOT/'runtime'/p/'config.json').exists() or (ROOT/'output/links'/(p+'.txt')).exists() for p in selected):raise ValueError('所选协议已有节点配置或链接，拒绝覆盖现有节点认证信息')
+ if not getattr(a,'repair',False) and any((ROOT/'runtime'/p/'config.json').exists() for p in selected):raise ValueError('所选协议已有节点配置，拒绝覆盖现有节点认证信息')
  if not (ROOT/'bin/mihomo_1.19.33').is_file():raise ValueError('缺少仓库自带的 bin/mihomo_1.19.33，请重新获取完整项目')
  (ROOT/'runtime').mkdir(parents=True,exist_ok=True,mode=0o700)
  with tempfile.TemporaryDirectory(dir=ROOT/'runtime') as temp:
@@ -180,24 +154,27 @@ def generate(a):
    else:link=f'{p}://{quote(auth,safe=":")}@{endpoint}?{urlencode(q)}'
    doc['_ezm']={'server':server,'tls-name':name}
    write(home/'config.json',doc)
-   write(link_directory/(p+'.txt'),link+'\n')
+   write(link_directory/(p+'.link'),link+'\n')
   port_directory=config/'ports';port_directory.mkdir(mode=0o700)
-  for p in SPECS:write(port_directory/(p+'.txt'),str(ports[p])+'\n')
+  for p in SPECS:write(port_directory/(p+'.port'),str(ports[p])+'\n')
   # Validate without opening listeners; permit only this project's certificate directory.
   for p in selected:
    home=temp/'runtime'/p
    result=subprocess.run([str(ROOT/'bin/mihomo_1.19.33'),'-t','-d',str(home),'-f',str(home/'config.json')],env=dict(os.environ,SAFE_PATHS=str(certs)),capture_output=True)
    if result.returncode:raise ValueError(p+'：mihomo 配置校验失败')
+  from subscription import check_port
+  from ports import load as load_all_ports
+  check_port(load_all_ports(a.ports,a.base_port)['subscription'],'::' if ':' in server else '0.0.0.0')
   check_bindings(a.listen,ports,selected)
   (ROOT/'output').mkdir(parents=True,exist_ok=True)
   publications=[]
   if not getattr(a,'managed_source',False):
    publications=[(certs/name,ROOT/'runtime/certs/config/live/ezm-node'/name) for name in ('fullchain.pem','privkey.pem')]
   if not getattr(a,'repair',False):
-   publications += [(port_directory/(p+'.txt'),ROOT/'config/ports'/(p+'.txt')) for p in SPECS]
+   publications += [(port_directory/(p+'.port'),ROOT/'config/ports'/(p+'.port')) for p in SPECS]
   publications += [(temp/'runtime'/p,ROOT/'runtime'/p) for p in selected]
   (ROOT/'output/links').mkdir(parents=True,exist_ok=True,mode=0o700)
-  publications += [(link_directory/(p+'.txt'),ROOT/'output/links'/(p+'.txt')) for p in selected]
+  publications += [(link_directory/(p+'.link'),ROOT/'output/links'/(p+'.link')) for p in selected]
   installed=[]
   try:
    if getattr(a,'repair',False):
@@ -209,10 +186,7 @@ def generate(a):
     if destination.is_file():shutil.copy2(destination,backup)
     elif destination.exists():destination.rename(backup)
     installed.append((destination,backup))
-    if destination.parent==ROOT/'output/links':
-     os.chown(staged,-1,information_group());staged.chmod(0o660)
-    elif destination.parent==ROOT/'config/ports':
-     user_config_access(staged)
+    if staged.is_file():user_config_access(staged,0o600)
     staged.replace(destination)
   except BaseException:
    for destination,backup in reversed(installed):
@@ -227,6 +201,19 @@ def generate(a):
  print('\n【节点链接已更新】'+', '.join(selected),flush=True)
  print('请在客户端导入 output/links/ 中对应的新链接，旧链接不再可用。\n',flush=True)
  if a.self_signed:print('自签名仅用于测试：客户端必须导入 runtime/certs/config/live/ezm-node/fullchain.pem 作为信任证书，分享链接不包含该证书。')
+def export_links():
+ from outbound import atomic_write
+ from subscription import settings
+ directory=ROOT/'output/links'
+ values={p:node_link(p,json.loads((ROOT/'runtime'/p/'config.json').read_text())) for p in SPECS}
+ values['subscription']=settings()['url']
+ directory.mkdir(parents=True,exist_ok=True)
+ for p,value in values.items():
+  path=directory/(p+'.link')
+  atomic_write(path,(value+'\n').encode(),0o600)
+  user_config_access(path,0o600)
+ print('节点与订阅链接已导出至 output/links/')
+
 def certificate_name():
  import re
  value=run('openssl','x509','-in',str(ROOT/'runtime/certs/config/live/ezm-node/fullchain.pem'),'-noout','-ext','subjectAltName')
@@ -267,15 +254,8 @@ def node_link(protocol, doc):
   link=f'{protocol}://{quote(auth,safe=":")}@{endpoint}?{urlencode(q)}'
  return link
 
-def link_identity(value):
- if value.startswith('vmess://'):
-  encoded=value[len('vmess://'):]
-  return json.loads(base64.urlsafe_b64decode(encoded+'='*(-len(encoded)%4)))
- parsed=urlsplit(value)
- return (parsed.scheme,unquote(parsed.netloc),parsed.path,sorted(parse_qsl(parsed.query,keep_blank_values=True)))
-
 def complete(protocol,port=None):
- config=ROOT/'runtime'/protocol/'config.json';link=ROOT/'output/links'/(protocol+'.txt')
+ config=ROOT/'runtime'/protocol/'config.json'
  try:
   if port is None:port=load_ports(ROOT/'config/ports')[protocol]
   doc=json.loads(config.read_text())
@@ -283,9 +263,7 @@ def complete(protocol,port=None):
   if not doc['listeners'] or not isinstance(doc['listeners'][0],dict):return False
   if doc['listeners'][0].get('type')!=protocol:return False
   if doc['listeners'][0].get('port')!=port:return False
-  value=link.read_text().strip()
-  if not value or len(value.splitlines())!=1:return False
-  if link_identity(value)!=link_identity(node_link(protocol,doc)):return False
+  node_link(protocol,doc)  # Validate node fields, never compare an exported file.
   result=subprocess.run([str(ROOT/'bin/mihomo_1.19.33'),'-t','-d',str(config.parent),'-f',str(config)],
    env=dict(os.environ,SAFE_PATHS=str(ROOT/'runtime/certs')),capture_output=True,timeout=15)
   return result.returncode==0
@@ -362,7 +340,7 @@ def initialize():
  if not missing:return
  print('\n'+'='*60,flush=True)
  print('【警告】即将生成或重建节点',flush=True)
- print('节点配置、端口或链接缺失、无效或不一致：'+', '.join(missing),flush=True)
+ print('节点配置或端口缺失、无效或不一致：'+', '.join(missing),flush=True)
  print('受影响节点的认证信息（UUID、密码等）和链接将重新生成，旧链接将失效！',flush=True)
  print('完成后请在客户端导入 output/links/ 中对应的新链接。',flush=True)
  print('='*60+'\n',flush=True)
@@ -389,7 +367,7 @@ if __name__=='__main__':
   sys.exit(0)
  parser=argparse.ArgumentParser()
  parser.add_argument('--server',required=True);parser.add_argument('--tls-name')
- parser.add_argument('--ports',type=Path,default=ROOT/'config/ports',help='各协议端口 .txt 文件所在目录')
+ parser.add_argument('--ports',type=Path,default=ROOT/'config/ports',help='各协议端口 .port 文件所在目录')
  parser.add_argument('--base-port',type=int,help='覆盖端口配置，使用从此端口起的七个连续端口');parser.add_argument('--listen',default='0.0.0.0')
  parser.add_argument('--cert',type=Path);parser.add_argument('--key',type=Path);parser.add_argument('--self-signed',action='store_true')
  parser.add_argument('--vless-security',choices=['tls','reality'],default='reality')

@@ -57,7 +57,16 @@ def target(rule):
 def required_ports():
     from configure import load_ports
     ports = load_ports(ROOT / 'config/ports')
-    required = {'80/tcp'}
+    from ports import load
+    required = {'80/tcp', str(load()['subscription']) + '/tcp'}
+    # Retain the live subscription port until a port change has been applied.
+    try:
+        from service import owned, state_file
+        if owned('subscription'):
+            active = json.loads(state_file('subscription').read_text())['port']
+            required.add(str(active) + '/tcp')
+    except (OSError, ValueError, KeyError, TypeError):
+        pass
     for protocol, port in ports.items():
         transports = ('tcp', 'udp') if protocol == 'shadowsocks' else (
             ('udp',) if protocol in ('hysteria2', 'tuic') else ('tcp',))
@@ -113,7 +122,7 @@ def configure(action, quiet=False):
             numbers = sorted(int(port.split('/')[0]) for port in ports
                              if port.endswith('/' + transport) and port != '80/tcp')
             if numbers:
-                print('  节点 ' + transport.upper() + '：' + '、'.join(map(str, numbers)))
+                print('  ' + transport.upper() + '：' + '、'.join(map(str, numbers)))
     if not quiet and not added and not removed:
         print('UFW 放行规则无变化。')
 

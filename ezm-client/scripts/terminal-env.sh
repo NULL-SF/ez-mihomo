@@ -27,7 +27,7 @@ _mihomo_remove_preload() {
 _mihomo_load_ports() {
   local root="$1" value="" file
   PROXY_PORT_DEFAULTED=0
-  file="$root/config/port.txt"
+  file="$root/config/listening.port"
   if [[ -e "$file" && ( ! -f "$file" || ! -r "$file" ) ]]; then
     printf '端口配置不是可读的普通文件：%s\n' "$file" >&2
     return 1
@@ -58,11 +58,11 @@ _mihomo_ensure_ports() {
   if [[ "$PROXY_PORT_DEFAULTED" == 1 ]]; then
     mkdir -p "$root/config" || return 1
     temporary=$(mktemp "$root/config/.port.XXXXXX") || return 1
-    if ! printf '%s\n' "$PROXY_PORT" > "$temporary" || ! mv -f -- "$temporary" "$root/config/port.txt"; then
+    if ! printf '%s\n' "$PROXY_PORT" > "$temporary" || ! mv -f -- "$temporary" "$root/config/listening.port"; then
       rm -f -- "$temporary"
       return 1
     fi
-    printf '统一代理端口已写入 config/port.txt：%s。\n' "$PROXY_PORT" >&2
+    printf '统一代理端口已写入 config/listening.port：%s。\n' "$PROXY_PORT" >&2
   fi
 }
 

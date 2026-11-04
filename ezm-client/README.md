@@ -12,15 +12,15 @@
 
 ### 1.1 当前线路
 
-当前线路写在 `config/active.txt`，可选 `vless`、`vmess`、`hysteria2`、`trojan`、`shadowsocks`、`tuic`、`anytls`；同一时间只运行一条。文件缺失或为空时，启动默认使用并写入 `hysteria2`；非法线路名报错，不自动换线路。
+当前线路写在 `config/protocol.activate`，可选 `vless`、`vmess`、`hysteria2`、`trojan`、`shadowsocks`、`tuic`、`anytls`；同一时间只运行一条。文件缺失或为空时，启动默认使用并写入 `hysteria2`；非法线路名报错，不自动换线路。切换线路优先使用 `switch`；手动修改该文件后，执行 `restart` 生效。
 
 ### 1.2 节点链接
 
-节点链接保存在 `config/links/` 下对应线路的文件中。当前线路的链接改完后，需执行 `restart` 才会生效；其他线路的链接在切换到该线路时生效。链接为空、解析失败或核心配置校验失败时，服务仍会监听本机端口，但拒绝转发外部连接。不存在的链接文件会在启动或切换时建成空文件，不会自动填入节点。
+节点链接保存在 `config/links/` 下对应线路的 `.link` 文件中。当前线路的链接改完后，需执行 `restart` 才会生效；其他线路的链接在切换到该线路时生效。链接为空、解析失败或核心配置校验失败时，服务仍会监听本机端口，但拒绝转发外部连接。不存在的链接文件会在启动或切换时建成空文件，不会自动填入节点。
 
 ### 1.3 本机端口
 
-统一代理端口写在 `config/port.txt`，填写一个 `1–65535` 的整数，默认 `10808`，SOCKS 和 HTTP 共用。启动或执行 `source` 时都会检查端口配置：文件缺失、为空或内容无效，就使用默认端口并写回文件。修改端口后，重启代理并重新 `source`；单独配置代理地址的程序也需更新端口。
+统一代理端口写在 `config/listening.port`，填写一个 `1–65535` 的整数，默认 `10808`，SOCKS 和 HTTP 共用。启动或执行 `source` 时都会检查端口配置：文件缺失、为空或内容无效，就使用默认端口并写回文件。修改端口后，重启代理并重新 `source`；单独配置代理地址的程序也需更新端口。
 
 ## 2 代理架构
 
@@ -81,7 +81,7 @@ flowchart TB
     style SHELL_COLUMN fill:transparent,stroke:transparent
 ```
 
-**注意：** 本机回环连接仍保持直连。且该方案不能保证覆盖所有程序或 UDP 流量。
+**注意：** 本机回环连接仍保持直连；该方案不能保证覆盖所有程序或 UDP 流量。
 
 ## 3 命令
 
@@ -90,6 +90,8 @@ flowchart TB
 ```bash
 cd /path/to/ezm-client
 ```
+
+客户端命令以当前用户执行。各管理命令会检查并补齐所需依赖；安装系统软件包、启用 cron 系统服务时调用 sudo，可能提示输入密码。
 
 管理命令格式：
 
@@ -122,7 +124,7 @@ source ./proxy.env
 | `bash ./client.sh test` | 分别测试 HTTP 和 SOCKS 代理，均访问 `https://www.google.com`，显示连接结果和首字节耗时；任一代理测试失败，命令返回失败。不改线路，也不启停监听。 |
 | `bash ./client.sh log` | 持续查看 `log/mihomo.log`，按 `Ctrl+C` 退出查看。 |
 
-**端口监听不等于节点可用。**`start` 新启动服务，以及 `restart`、`switch` 后，都会执行与 `test` 相同的连接检查。请求正常完成且最终返回 HTTP 200 才算成功。七类线路使用同一测试标准。需要在脚本中用退出码判断联网是否成功时，使用 `test`；`start`、`restart`、`switch` 的联网检查失败不会自动停止已启动的服务，也不会因此返回失败。
+**端口监听不等于节点可用。** `start` 新启动服务，以及 `restart`、`switch` 后，都会执行与 `test` 相同的连接检查。请求正常完成且最终返回 HTTP 200 才算成功。七类线路使用同一测试标准。需要在脚本中用退出码判断联网是否成功时，使用 `test`；`start`、`restart`、`switch` 的联网检查失败不会自动停止已启动的服务，也不会因此返回失败。
 
 首字节耗时表示响应延迟，不是节点 RTT 或下载速度。请求失败时显示“未测得”，详细原因写入日志。
 
@@ -144,28 +146,34 @@ source ./proxy.env
 | `bash ./client.sh boot` | 选择开启或关闭开机自启，修改当前用户的 crontab，不影响当前服务。 |
 | `bash ./client.sh terminal` | 选择开启或关闭新终端打开时的代理自动接入；不影响已打开的终端，也不启停 ezm-client 服务。 |
 
+开启 `boot` 时，先补齐启动所需依赖并准备 cron，全部成功后才写入当前用户的 crontab。
+
 `boot` 控制开机启动服务，`terminal` 控制新终端自动执行 `source`。若服务未启动，新终端的自动接入会报错；启动服务后，在该终端重新 `source` 即可。
 
 ## 4 项目文件与目录
 
 下表的路径均相对于本项目目录。**一般只需要修改 `config/` 下的端口、当前线路和节点链接**；运行文件及自动生成的文件不要手改。
 
+项目文件由安装用户管理，可直接读写。
+
 | 路径 | 是什么 | 是否手动修改 |
 |---|---|---|
 | `client.sh` | 管理命令入口。 | 不改 |
+| `scripts/dependencies.sh` | 检查并补齐各命令所需依赖。 | 不改 |
+| `scripts/permissions.py` | 整理项目文件归属和权限。 | 不改 |
 | `scripts/client-service.sh` | `start` 和开机任务调用的后台启动脚本。 | 不改 |
 | `scripts/link_config.py` | 节点链接解析和运行配置生成。 | 不改 |
 | `scripts/terminal-env.sh` | 管理脚本和终端代理共用的环境及端口处理函数。 | 不改 |
 | `bin/mihomo_1.19.33` | [MetaCubeX/mihomo v1.19.33 官方发行](https://github.com/MetaCubeX/mihomo/releases/tag/v1.19.33)的核心程序。 | 不改 |
-| `config/port.txt` | 本机 SOCKS / HTTP 统一代理端口。 | 需要换端口时改 |
-| `config/active.txt` | 当前线路名：`vless`、`vmess`、`hysteria2`、`trojan`、`shadowsocks`、`tuic` 或 `anytls`。 | 选线路时优先使用 `switch` |
-| `config/links/vless.txt` | VLESS 节点链接，一行。 | 使用或更换 VLESS 时改 |
-| `config/links/vmess.txt` | VMess 节点链接，一行。 | 使用或更换 VMess 时改 |
-| `config/links/hysteria2.txt` | Hysteria2 节点链接，一行。 | 使用或更换 Hysteria2 时改 |
-| `config/links/trojan.txt` | Trojan 节点链接，一行。 | 使用或更换 Trojan 时改 |
-| `config/links/shadowsocks.txt` | Shadowsocks 节点链接，一行。 | 使用或更换 Shadowsocks 时改 |
-| `config/links/tuic.txt` | TUIC 节点链接，一行。 | 使用或更换 TUIC 时改 |
-| `config/links/anytls.txt` | AnyTLS 节点链接，一行。 | 使用或更换 AnyTLS 时改 |
+| `config/listening.port` | 本机 SOCKS / HTTP 统一代理端口。 | 需要换端口时改 |
+| `config/protocol.activate` | 当前线路名：`vless`、`vmess`、`hysteria2`、`trojan`、`shadowsocks`、`tuic` 或 `anytls`。 | 选线路时优先使用 `switch` |
+| `config/links/vless.link` | VLESS 节点链接，一行。 | 使用或更换 VLESS 时改 |
+| `config/links/vmess.link` | VMess 节点链接，一行。 | 使用或更换 VMess 时改 |
+| `config/links/hysteria2.link` | Hysteria2 节点链接，一行。 | 使用或更换 Hysteria2 时改 |
+| `config/links/trojan.link` | Trojan 节点链接，一行。 | 使用或更换 Trojan 时改 |
+| `config/links/shadowsocks.link` | Shadowsocks 节点链接，一行。 | 使用或更换 Shadowsocks 时改 |
+| `config/links/tuic.link` | TUIC 节点链接，一行。 | 使用或更换 TUIC 时改 |
+| `config/links/anytls.link` | AnyTLS 节点链接，一行。 | 使用或更换 AnyTLS 时改 |
 | `proxy.env`、`lib/libproxychains4.so` | 当前终端接入代理的脚本和库。 | 不改，按上节命令使用 |
 | `runtime/` | 运行中的配置及 `mihomo.pid`，可能含节点凭据；代理运行时需要它。 | 不改；迁移时不需复制旧内容 |
 | `log/mihomo.log` | 运行日志；代理运行时持续写入。 | 用 `log` 查看 |
@@ -177,7 +185,7 @@ source ./proxy.env
 
 ### 5.1 链接格式
 
-每个 `config/links/*.txt` 只放一条对应协议的完整节点链接，不支持订阅地址。域名、IPv4 和 `[IPv6]` 均可；特殊字符须 URL 编码，`#名称` 只作备注。
+每个 `config/links/*.link` 只放一条对应协议的完整节点链接，不支持订阅地址。域名、IPv4 和 `[IPv6]` 均可；特殊字符须 URL 编码，`#名称` 只作备注。
 
 | 线路 | 支持的格式 |
 |---|---|
@@ -329,16 +337,16 @@ bash <(curl -fsSL https://raw.githubusercontent.com/NULL-SF/ez-mihomo/main/insta
 
 选择 `2`（客户端），安装到当前目录的 `ezm-client/`。注意确保目录完整路径无空格，防止 ProxyChains 工具失效。
 
-下载后进入目录：
+下载后进入目录，并赋予项目可执行权限：
 
 ```bash
 cd ezm-client
+chmod +x client.sh scripts/*.sh bin/mihomo_1.19.33
 ```
 
-使用时至少填好 `config/active.txt` 指定线路的链接，其他线路的链接可稍后再填；同时再次确认 `config/port.txt` 。随后确保赋予项目可执行权限，启动代理。
+使用时至少填好 `config/protocol.activate` 指定线路的链接，其他线路的链接可稍后再填；同时再次确认 `config/listening.port`。随后启动代理。
 
 ```bash
-chmod +x client.sh scripts/*.sh bin/mihomo_1.19.33
 bash ./client.sh start
 ```
 
@@ -348,7 +356,7 @@ bash ./client.sh start
 bash ./client.sh boot
 ```
 
-在 `boot` 的提示中选择开启。它只登记开机任务；当前代理由 `start` 启动，启动后保持后台运行。
+在 `boot` 的提示中选择开启。它不启停当前代理。
 
 若希望今后打开新终端时自动接入代理，执行 `bash ./client.sh terminal` 并选择开启。若希望只代理当前终端，执行 `source ./proxy.env`。若希望恢复当前终端在接入代理前的环境，执行 `source ./proxy.env off`。
 
@@ -360,7 +368,7 @@ bash ./client.sh boot
 
 ### 7.2 代理配置
 
-安装插件或 CLI 后，`.env` 和 `config.toml` 不保证自动存在。在服务器终端执行 `mkdir -p ~/.codex`，然后用 VS Code 打开服务器上的 `~/.codex/`：文件不存在就新建，已存在就先备份、再修改原文件。如果设置过 `CODEX_HOME`，改用它指定的目录。下面代码块是**文件内容，不是要在终端执行的命令**。以下示例的 HTTP 和 SOCKS 共用 `10808`，须与 `config/port.txt` 一致；使用前确认 ezm-client 混合代理入口已经启动。
+安装插件或 CLI 后，`.env` 和 `config.toml` 不保证自动存在。在服务器终端执行 `mkdir -p ~/.codex`，然后用 VS Code 打开服务器上的 `~/.codex/`：文件不存在就新建，已存在就先备份、再修改原文件。如果设置过 `CODEX_HOME`，改用它指定的目录。下面代码块是**文件内容，不是要在终端执行的命令**。以下示例的 HTTP 和 SOCKS 共用 `10808`，须与 `config/listening.port` 一致；使用前确认 ezm-client 混合代理入口已经启动。
 
 `~/.codex/.env`：若不存在，新建并写入以下八行；若已存在，将同名变量的值改为以下内容，缺少的变量再补上。每个变量只保留一条，其他原有内容保留。
 

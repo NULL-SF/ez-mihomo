@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Apply config/ports/local_relay.txt without changing inbound credentials or links.
+"""Apply config/ports/local_relay.port without changing inbound credentials or links.
 
 Called under server.sh's existing management lock. No menus or saved mode state.
 """
@@ -18,25 +18,16 @@ PROXY = 'ezm-local-socks'
 
 
 def load_port(write_default=False, check_ports=True):
-    path = ROOT / 'config/ports/local_relay.txt'
+    if check_ports:
+        from ports import load
+        return load(write_defaults=write_default)['local_relay']
+    path = ROOT / 'config/ports/local_relay.port'
     value = path.read_text().strip() if path.exists() else ''
     if not value:
-        if write_default:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            atomic_write(path, b'0\n', 0o644)
-            user_config_access(path)
         return 0
     if not value.isascii() or not value.isdecimal() or not 0 <= int(value) <= 65535:
-        raise ValueError('config/ports/local_relay.txt 必须填写 0–65535 的整数；0 表示直接出口。')
-    port = int(value)
-    if port and check_ports:
-        for protocol in SPECS:
-            path = ROOT / 'config/ports' / (protocol + '.txt')
-            if path.is_file():
-                value = path.read_text().strip()
-                if value.isascii() and value.isdecimal() and int(value) == port:
-                    raise ValueError('本机中继端口不能与服务端入站端口相同。')
-    return port
+        raise ValueError('local_relay.port 必须填写 0–65535 的整数')
+    return int(value)
 
 
 def describe(port):
@@ -68,6 +59,7 @@ def atomic_write(path, data, mode):
             stream.write(data)
             stream.flush()
             os.fsync(stream.fileno())
+        user_config_access(temporary, mode)
         temporary.replace(path)
     finally:
         if temporary is not None:

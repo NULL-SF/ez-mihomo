@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # VPS 节点管理入口：mihomo 配置，版本固定，状态与配置分开存放。
 set -euo pipefail
+umask 077
 export PYTHONDONTWRITEBYTECODE=1
 # Management uses explicit egress configuration, not inherited shell proxies.
 unset LD_PRELOAD HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy NO_PROXY no_proxy
@@ -112,8 +113,8 @@ prepare_firewall() {
   "$PYTHON" "$ROOT/scripts/firewall.py" start "$@" 9>&-
 }
 start_services() {
-  check_platform
   prepare_dependencies
+  check_platform
   lock_management
   prepare_firewall
   local certificate_checked=0
@@ -134,7 +135,16 @@ PYLOGS
   if [[ "$certificate_checked" == 0 ]]; then
     "$PYTHON" "$ROOT/scripts/certificate.py" resume 9>&- || return $?
   fi
+  "$PYTHON" "$ROOT/scripts/subscription.py" preflight 9>&- || return $?
   if "$PYTHON" "$ROOT/scripts/service.py" start all 9>&-; then
+    "$PYTHON" "$ROOT/scripts/subscription.py" start 9>&- || return $?
+    prepare_firewall --quiet || return $?
+    "$PYTHON" - "$ROOT" 9>&- <<'PYEXPORT' || return $?
+import sys
+sys.path.insert(0,sys.argv[1]+'/scripts')
+from configure import export_links
+export_links()
+PYEXPORT
     return 0
   else
     local result=$?
@@ -147,6 +157,7 @@ stop_server() {
   lock_management
   local result=0
   "$PYTHON" "$ROOT/scripts/certificate.py" pause 9>&- || result=$?
+  "$PYTHON" "$ROOT/scripts/subscription.py" stop 9>&- || result=$?
   "$PYTHON" "$ROOT/scripts/service.py" stop all 9>&- || result=$?
   "$PYTHON" "$ROOT/scripts/firewall.py" stop 9>&- || result=$?
   return "$result"
@@ -168,7 +179,11 @@ case "$cmd" in
   start) start_services ;;
   stop) stop_server ;;
   restart) stop_server; start_services ;;
-  status) require_python basic; "$PYTHON" "$ROOT/scripts/service.py" status all 9>&- ;;
+  status)
+    require_python
+    "$PYTHON" "$ROOT/scripts/service.py" status all 9>&-
+    "$PYTHON" "$ROOT/scripts/subscription.py" status 9>&-
+    ;;
   boot) boot_menu ;;
   log)
     (($# == 0)) || { echo 'log 不接受参数，直接执行 bash ./server.sh log。' >&2; exit 1; }
@@ -183,11 +198,12 @@ case "$cmd" in
     echo '  6) TUIC'
     echo '  7) AnyTLS'
     echo '  8) 证书申请与续期'
+    echo '  9) 订阅服务'
     read -r -p '输入序号 [0]：' choice || { echo '已取消。'; exit 0; }
-    protocols=(vless vmess hysteria2 trojan shadowsocks tuic anytls certificate)
+    protocols=(vless vmess hysteria2 trojan shadowsocks tuic anytls certificate subscription)
     case "${choice:-0}" in
       0) selected=("${protocols[@]}") ;;
-      [1-8]) selected=("${protocols[choice-1]}") ;;
+      [1-9]) selected=("${protocols[choice-1]}") ;;
       *) echo '输入无效，未查看日志。' >&2; exit 1 ;;
     esac
     log_files=()
@@ -213,11 +229,12 @@ case "$cmd" in
     echo '  5) Shadowsocks'
     echo '  6) TUIC'
     echo '  7) AnyTLS'
+    echo '  8) 订阅地址'
     read -r -p '输入序号 [0]：' choice || { echo '已取消。'; exit 0; }
-    protocols=(vless vmess hysteria2 trojan shadowsocks tuic anytls)
+    protocols=(vless vmess hysteria2 trojan shadowsocks tuic anytls subscription)
     case "${choice:-0}" in
       0) selected=all ;;
-      [1-7]) selected="${protocols[choice-1]}" ;;
+      [1-8]) selected="${protocols[choice-1]}" ;;
       *) echo '输入无效，未查看链接。' >&2; exit 1 ;;
     esac
     require_python
@@ -227,13 +244,14 @@ from pathlib import Path
 root=Path(sys.argv[1]);selected=sys.argv[2]
 sys.path.insert(0,str(root/'scripts'))
 from service import SPECS
-if selected!='all' and selected not in SPECS:
+names=(*SPECS,'subscription')
+if selected!='all' and selected not in names:
     sys.exit('未知协议。')
-protocols=SPECS if selected=='all' else (selected,)
+protocols=names if selected=='all' else (selected,)
 try:
     values=[]
     for protocol in protocols:
-        value=(root/'output/links'/(protocol+'.txt')).read_text().strip()
+        value=(root/'output/links'/(protocol+'.link')).read_text().strip()
         if not value or len(value.splitlines())!=1:
             raise ValueError(protocol+' 的链接文件为空或不是单行')
         values.append(value)

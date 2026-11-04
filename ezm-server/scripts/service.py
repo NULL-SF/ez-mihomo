@@ -8,7 +8,7 @@ ROOT=Path(__file__).resolve().parents[1]
 SPECS=('vless','vmess','hysteria2','trojan','shadowsocks','tuic','anytls')
 
 def state_file(p):
- return ROOT/'runtime'/p/'mihomo.pid'
+ return ROOT/'runtime'/p/('subscription.pid' if p=='subscription' else 'mihomo.pid')
 
 def migrate_certificate_logs():
  directory=ROOT/'log/certs';old=ROOT/'log/acme'
@@ -54,62 +54,22 @@ def use_original_certificates():
  if (directory/'config/live/ezm-node/fullchain.pem').is_file() and (directory/'config/live/ezm-node/privkey.pem').is_file():
   for path in old_paths:path.unlink(missing_ok=True)
 
-def information_group():
- if os.environ.get('SUDO_GID'):return int(os.environ['SUDO_GID'])
- runtime=ROOT/'runtime'
- if runtime.is_dir() and runtime.stat().st_gid!=0:return runtime.stat().st_gid
- return ROOT.stat().st_gid
-
-def user_config_access(path,mode=0o644):
- """Keep editable, non-secret input settings owned by the installing user."""
+def user_config_access(path,mode=0o600):
+ """Keep project files owned by the installing user."""
  if path.is_symlink():return
  if os.geteuid()==0:
   owner=ROOT.stat()
-  ports=ROOT/'config/ports'
-  if ports.is_dir() and not ports.is_symlink() and ports.stat().st_uid!=0:
-   owner=ports.stat()
-  uid=int(os.environ.get('SUDO_UID',owner.st_uid))
-  gid=int(os.environ.get('SUDO_GID',owner.st_gid))
+  uid=owner.st_uid if owner.st_uid!=0 else int(os.environ.get('SUDO_UID',owner.st_uid))
+  gid=owner.st_gid if owner.st_uid!=0 else int(os.environ.get('SUDO_GID',owner.st_gid))
   os.chown(path,uid,gid)
  path.chmod(mode)
 
 def information_access():
- if os.geteuid()!=0:return
- # Editable configs/logs/links belong to the trusted installation group; PID stays read-only.
- group=information_group()
- def access(path,mode):
-  if path.is_symlink():return
-  os.chown(path,-1,group);path.chmod(mode)
- ports=ROOT/'config/ports'
- if ports.is_dir() and not ports.is_symlink():
-  user_config_access(ports,0o755)
-  for name in (*SPECS,'local_relay'):
-   path=ports/(name+'.txt')
-   if path.is_file():user_config_access(path)
- runtime=ROOT/'runtime'
- if runtime.is_dir() and not runtime.is_symlink():
-  access(runtime,0o2750)
-  for protocol in SPECS:
-   directory=runtime/protocol
-   if directory.is_dir() and not directory.is_symlink():
-    access(directory,0o2770)
-    for name in ('config.json','mihomo.pid'):
-     path=directory/name
-     if path.is_file():access(path,0o660 if name=='config.json' else 0o640)
- output=ROOT/'output'
- if output.is_dir():access(output,0o750)
- for directory in (ROOT/'log',output/'links'):
-  if not directory.is_dir() or directory.is_symlink():continue
-  access(directory,0o2770)
-  for parent,dirs,files in os.walk(directory,followlinks=False):
-   for name in dirs:
-    path=Path(parent)/name
-    if not path.is_symlink():access(path,0o2770)
-   for name in files:
-    path=Path(parent)/name
-    if path.is_file() and not path.is_symlink():access(path,0o660)
+ from permissions import restore_access
+ restore_access(ROOT)
 
 def command(p):
+ if p=='subscription':return [sys.executable,str(ROOT/'scripts/subscription.py'),'run']
  return [str(ROOT/'bin/mihomo_1.19.33'),'-d',str(ROOT/'runtime'/p),'-f',str(ROOT/'runtime'/p/'config.json')]
 
 def identity(pid):
@@ -134,8 +94,8 @@ def write_state(path,value):
  with tempfile.NamedTemporaryFile(dir=path.parent,mode='w',delete=False) as stream:
   temporary=Path(stream.name)
   try:
-   os.chown(temporary,-1,information_group())
-   os.chmod(temporary,0o640);json.dump(value,stream);stream.flush();os.fsync(stream.fileno())
+   user_config_access(temporary,0o600)
+   json.dump(value,stream);stream.flush();os.fsync(stream.fileno())
   except BaseException:
    temporary.unlink(missing_ok=True);raise
  try:temporary.replace(path)
@@ -196,7 +156,7 @@ def start(p):
  for k in list(env):
   if k.lower() in ('http_proxy','https_proxy','all_proxy','no_proxy') or k in ('LD_PRELOAD','PROXYCHAINS_CONF_FILE','PROXYCHAINS_QUIET_MODE','_MIHOMO_PROXY_SNAPSHOT'):env.pop(k,None)
  with (ROOT/'log'/(p+'.log')).open('ab') as log:
-  child=subprocess.Popen(command(p),cwd=ROOT,env=env,stdin=subprocess.DEVNULL,stdout=log,stderr=log,start_new_session=True)
+  child=subprocess.Popen(command(p),cwd=ROOT,env=env,stdin=subprocess.DEVNULL,stdout=log,stderr=log,start_new_session=True,umask=0o077)
   state=state_file(p)
   try:
    tick=identity(child.pid)

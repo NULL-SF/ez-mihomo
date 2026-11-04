@@ -12,7 +12,7 @@ source "$ROOT/scripts/dependencies.sh"
 if [[ "${1:-}" != --managed ]]; then client_dependencies service; fi
 CORE="${ROOT}/bin/mihomo_1.19.33"
 CONFIG="$ROOT/runtime/mihomo.json"
-ACTIVE="$ROOT/config/active.txt"
+ACTIVE="$ROOT/config/protocol.activate"
 umask 077
 [[ -x "$CORE" ]] || { echo '缺少仓库自带的 bin/mihomo_1.19.33，请重新获取完整项目' >&2; exit 1; }
 mkdir -p "$ROOT/runtime" "$ROOT/config/links"
@@ -32,7 +32,7 @@ esac
 exec 9>"$ROOT/runtime/service.lock"
 flock -n 9 || exit 0
 for protocol in vless vmess hysteria2 trojan shadowsocks tuic anytls; do
-  [[ -e "$ROOT/config/links/$protocol.txt" ]] || : > "$ROOT/config/links/$protocol.txt"
+  [[ -e "$ROOT/config/links/$protocol.link" ]] || : > "$ROOT/config/links/$protocol.link"
 done
 _mihomo_ensure_ports "$ROOT"
 profile="$(tr -d '[:space:]' < "$ACTIVE" 2>/dev/null || true)"
@@ -53,7 +53,7 @@ for _ in $(seq 1 30); do
   sleep 1
 done
 export MIHOMO_ROOT="$ROOT" MIHOMO_PROFILE="$profile" MIHOMO_PORT="$PROXY_PORT"
-MIHOMO_LINK="$(cat -- "$ROOT/config/links/$profile.txt")";export MIHOMO_LINK
+MIHOMO_LINK="$(cat -- "$ROOT/config/links/$profile.link")";export MIHOMO_LINK
 reject_config() {
   python3 - "$ROOT" "$PROXY_PORT" "$CONFIG" <<'PY'
 import sys,json,os
@@ -86,4 +86,5 @@ fi
 unset MIHOMO_LINK MIHOMO_PROFILE MIHOMO_PORT MIHOMO_ROOT
 printf '[mihomo] 启动线路 %s，混合入口 127.0.0.1:%s。\n' "$profile" "$PROXY_PORT" >&2
 if [[ "$STARTUP_LOCK" == 1 ]]; then exec 8>&-; fi
+python3 "$ROOT/scripts/permissions.py"
 exec "$CORE" -d "$ROOT/runtime" -f "$CONFIG"

@@ -56,5 +56,17 @@ while IFS= read -r -d '' source_file; do
     echo "更新失败：$destination" >&2; exit 1
   fi
 done < <(find "$work/project" -type f -print0)
+if [[ "$EUID" == 0 && -n "${SUDO_UID:-}" ]]; then
+  install_owner_uid="$(stat -c %u -- "$target")"
+  install_owner_gid="$(stat -c %g -- "$target")"
+  if [[ "$install_owner_uid" == 0 ]]; then
+    install_owner_uid="$SUDO_UID"
+    install_owner_gid="${SUDO_GID:?}"
+  fi
+  chown -hR -- "$install_owner_uid:$install_owner_gid" "$target"
+fi
+# Uniform permissions, preserving owner execute bits and never following links.
+find "$target" -name .git -prune -o -type d -exec chmod u+rwx,go-rwx -- {} +
+find "$target" -name .git -prune -o -type f -exec chmod u+rw,go-rwx -- {} +
 printf '下载完成：%s\n' "$target"
 printf '使用方法见：%s/README.md\n' "$target"

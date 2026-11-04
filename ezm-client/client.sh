@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# 管理 127.0.0.1 上的 SOCKS / HTTP 混合入口，端口见 config/port.txt。
-# 七种线路均使用 bin/mihomo_1.19.33。当前线路见 config/active.txt。
+# 管理 127.0.0.1 上的 SOCKS / HTTP 混合入口，端口见 config/listening.port。
+# 七种线路均使用 bin/mihomo_1.19.33。当前线路见 config/protocol.activate。
 # 开机自启写在该用户的 crontab，到点执行 client.sh start，统一走启动准备。
 # 操作结果写入 log/mihomo.log。询问与 status 只显示在终端。
 set -euo pipefail
+umask 077
 export PYTHONDONTWRITEBYTECODE=1
 # 管理命令及核心使用自身配置，不继承终端的代理与预加载。
 unset LD_PRELOAD HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy NO_PROXY no_proxy
@@ -14,13 +15,21 @@ ROOT="${BASH_SOURCE[0]%/*}"
 ROOT="$(cd -- "$ROOT" && pwd -P)"
 source "${ROOT}/scripts/terminal-env.sh"
 source "$ROOT/scripts/dependencies.sh"
+client_restore_access() {
+  if client_python_ready basic; then
+    python3 "$ROOT/scripts/permissions.py" || printf '项目文件归属恢复失败，请检查权限。\n' >&2
+  fi
+}
+trap client_restore_access EXIT
 case "${1:-}" in
+  start|restart|switch) client_dependencies prepare ;;
+  stop) client_dependencies stop ;;
   status|test|terminal|log) client_dependencies "$1" ;;
   boot) client_dependencies boot-control ;;
   __write_proxychains) client_dependencies proxychains ;;
   ''|help|-h|--help) client_dependencies help ;;
 esac
-ACTIVE="${ROOT}/config/active.txt"
+ACTIVE="${ROOT}/config/protocol.activate"
 PIDFILE="${ROOT}/runtime/mihomo.pid"
 LOG="${ROOT}/log/mihomo.log"
 MARK="ezm-client-proxy-boot"
@@ -70,7 +79,7 @@ sync_proxychains() {
   local tmp_config
   tmp_config="$(mktemp "${ROOT}/runtime/.proxychains.conf.XXXXXX")" || return 1
   if ! cat > "$tmp_config" <<EOF
-# 由 client.sh 根据 config/port.txt 生成到 runtime。不要手改。
+# 由 client.sh 根据 config/listening.port 生成到 runtime。不要手改。
 # 仅在 source proxy.env 之后生效。
 strict_chain
 proxy_dns
@@ -216,7 +225,7 @@ start_proxy() {
   FRESH_START=0
   if port_open; then
     if ! own_listener; then
-      note "启动失败：127.0.0.1:${PORT} 已由其他进程占用。请先在 config/port.txt 设置空闲端口。"
+      note "启动失败：127.0.0.1:${PORT} 已由其他进程占用。请先在 config/listening.port 设置空闲端口。"
       return 1
     fi
     FRESH_START=0
@@ -391,10 +400,10 @@ switch_mihomo() {
   fi
   _mihomo_write_text "$ACTIVE" "$choice"
   if ! start_proxy; then
-    note "已切换到 ${choice}，并已写入 config/active.txt。监听未能启动，详见 ${LOG}"
+    note "已切换到 ${choice}，并已写入 config/protocol.activate。监听未能启动，详见 ${LOG}"
     return 1
   fi
-  note "已切换到 ${choice}。已写入 config/active.txt，此后启动与开机使用该线路。"
+  note "已切换到 ${choice}。已写入 config/protocol.activate，此后启动与开机使用该线路。"
   report_connection || true
 }
 
@@ -580,9 +589,9 @@ usage() {
   cat <<EOF
 用法: $0 <命令>
 
-  start    按 config/active.txt 启动。已在监听时不重复启动。启动后保持后台运行
+  start    按 config/protocol.activate 启动。已在监听时不重复启动。启动后保持后台运行
   stop     停止本项目核心及混合代理入口。依赖该代理的程序随即无法经该代理出网
-  restart  关闭监听后按 config/active.txt 再启动，然后报告连接是否正常
+  restart  关闭监听后按 config/protocol.activate 再启动，然后报告连接是否正常
   status   查看线路、开机自启、终端自动接入代理与监听。不写入日志
   test     分别测试 HTTP 和 SOCKS 代理，均访问 ${PROBE_URL}，显示连接结果和首字节耗时。不改线路，也不启停监听
   switch   询问后切换 vless / hysteria2 / vmess / trojan / shadowsocks / tuic / anytls 并保留。选中当前线路时按重启处理。监听起来后报告连接是否正常
