@@ -125,7 +125,7 @@ sudo bash ./server.sh <命令>
 |---|---|
 | `bash ./server.sh status` | 查看出站配置、核心版本，以及各协议的部署端口、传输及运行状态，另显示订阅服务的状态和端口，不进行连接测试。 |
 | `bash ./server.sh links` | 菜单选择全部节点链接、某个协议、白名单或黑名单订阅链接，回车默认显示七种协议的节点链接；只读取已导出的文件，不生成或修复链接。 |
-| `bash ./server.sh log` | 菜单选择全部节点、证书及订阅日志，或单独选择其中一项，回车默认全部；按 `Ctrl+C` 退出查看。 |
+| `bash ./server.sh log` | 菜单选择全部节点、证书、订阅及开机启动日志，或单独选择其中一项，回车默认全部；按 `Ctrl+C` 退出查看。 |
 
 ### 2.3 开机自启与定时任务
 
@@ -158,7 +158,7 @@ sudo bash ./server.sh <命令>
 | `runtime/协议名/` | 对应协议的 `config.json` 和 `mihomo.pid`；配置含节点认证信息。 | 通常不改；重建方法见 1.2 节 |
 | `runtime/subscription/` | 订阅服务的 `subscription.pid`。 | 不改 |
 | `runtime/` | 各协议及订阅运行目录、证书目录和运行状态。 | 需保留，不要当缓存清空 |
-| `log/` | 各协议日志、订阅日志 `subscription.log` 和开机启动日志。 | 按需查看 |
+| `log/` | 各协议日志、订阅日志 `subscription.log` 和开机启动日志 `boot.log`。 | 按需查看 |
 | `log/certs/` | `renewal.log` 为检查及续期结果，`letsencrypt.log` 为 Certbot 详细日志及其轮转文件。 | 用 `log` 菜单查看 |
 | `output/links/` | 七种协议的 `.link` 节点链接、`subscription-whitelist.link` 及 `subscription-blacklist.link`。 | 直接复制，不改；缺失时执行 `start` 重新导出 |
 

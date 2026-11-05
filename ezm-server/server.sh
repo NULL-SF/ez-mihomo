@@ -183,7 +183,7 @@ case "$cmd" in
     (($# == 0)) || { echo 'log 不接受参数，直接执行 bash ./server.sh log。' >&2; exit 1; }
     require_tools tail
     echo '选择要查看的日志：'
-    echo '  0) 全部（节点、证书、订阅）'
+    echo '  0) 全部（节点、证书、订阅、开机启动）'
     echo '  1) VLESS'
     echo '  2) VMess'
     echo '  3) Hysteria2'
@@ -193,11 +193,12 @@ case "$cmd" in
     echo '  7) AnyTLS'
     echo '  8) 证书申请与续期'
     echo '  9) 订阅服务'
+    echo '  10) 开机启动'
     read -r -p '输入序号 [0]：' choice || { echo '已取消。'; exit 0; }
-    protocols=(vless vmess hysteria2 trojan shadowsocks tuic anytls certificate subscription)
+    protocols=(vless vmess hysteria2 trojan shadowsocks tuic anytls certificate subscription boot)
     case "${choice:-0}" in
       0) selected=("${protocols[@]}") ;;
-      [1-9]) selected=("${protocols[choice-1]}") ;;
+      [1-9]|10) selected=("${protocols[choice-1]}") ;;
       *) echo '输入无效，未查看日志。' >&2; exit 1 ;;
     esac
     log_files=()

@@ -2,7 +2,7 @@
 # 管理 127.0.0.1 上的 SOCKS / HTTP 混合入口，端口见 config/listening.port。
 # 七种线路均使用 bin/mihomo_1.19.33。当前线路见 config/protocol.activate。
 # 开机自启写在该用户的 crontab，到点执行 client.sh start，统一走启动准备。
-# 操作结果写入 log/mihomo.log。询问与 status 只显示在终端。
+# 运行操作写入 log/mihomo.log，终端自动接入设置写入 log/terminal.log。询问与 status 只显示在终端。
 set -euo pipefail
 umask 077
 export PYTHONDONTWRITEBYTECODE=1
@@ -32,6 +32,9 @@ esac
 ACTIVE="${ROOT}/config/protocol.activate"
 PIDFILE="${ROOT}/runtime/mihomo.pid"
 LOG="${ROOT}/log/mihomo.log"
+BOOT_LOG="${ROOT}/log/boot.log"
+TERMINAL_LOG="${ROOT}/log/terminal.log"
+NOTE_LOG="$LOG"
 MARK="ezm-client-proxy-boot"
 TERMINAL_FLAG="${ROOT}/config/terminal.on"
 BASHRC="${HOME}/.bashrc"
@@ -105,9 +108,10 @@ EOF
 }
 
 note() {
+  local logfile="${NOTE_LOG:-$LOG}"
   printf '%s\n' "$*"
   mkdir -p "${ROOT}/log"
-  printf '%s [mihomo] %s\n' "$(date '+%Y/%m/%d %H:%M:%S')" "$*" >> "$LOG"
+  printf '%s [mihomo] %s\n' "$(date '+%Y/%m/%d %H:%M:%S')" "$*" >> "$logfile"
 }
 
 current_profile() {
@@ -171,7 +175,7 @@ kill_tree() {
 }
 
 cron_line() {
-  local service="${ROOT}/client.sh" logfile="$LOG" logdir="${ROOT}/log" line
+  local service="${ROOT}/client.sh" logfile="$BOOT_LOG" logdir="${ROOT}/log" line
   [[ "$ROOT" != *$'\n'* ]] || { printf '路径含换行符，无法登记 crontab。\n' >&2; return 1; }
   service="${service//\'/\'\\\'\'}"
   logfile="${logfile//\'/\'\\\'\'}"
@@ -427,7 +431,7 @@ set_terminal() {
   if [[ "$mode" == "on" ]]; then
     mkdir -p "${TERMINAL_FLAG%/*}" || return 1
   fi
-  python3 - "$BASHRC" "$mode" "$ROOT" <<'PY'
+  python3 - "$BASHRC" "$mode" "$ROOT" <<'PY' || return $?
 import os, pathlib, shlex, sys, tempfile
 path, mode, root = sys.argv[1:]
 begin = "# ezm-client-proxy-terminal-begin"
@@ -483,7 +487,7 @@ PY
 }
 
 terminal_mihomo() {
-  local state choice
+  local state choice detail NOTE_LOG="$TERMINAL_LOG"
   if terminal_enabled; then
     state="开"
   else
@@ -497,12 +501,18 @@ terminal_mihomo() {
   case "$choice" in
     1|on|开启)
       lock_management
-      set_terminal on
+      if ! detail="$(set_terminal on 2>&1)"; then
+        note "终端自动接入代理开启失败：${detail}"
+        return 1
+      fi
       note "终端自动接入代理已开启。此后新打开的终端会自动接入代理。已经打开的窗口不受影响。"
       ;;
     2|off|关闭)
       lock_management
-      set_terminal off
+      if ! detail="$(set_terminal off 2>&1)"; then
+        note "终端自动接入代理关闭失败：${detail}"
+        return 1
+      fi
       note "终端自动接入代理已关闭。此后新打开的终端不会自动接入代理。已经打开的窗口不受影响。"
       ;;
     *)
@@ -557,7 +567,7 @@ status_mihomo() {
   else
     echo "终端自动接入代理: 关"
   fi
-  echo "日志: ${LOG}"
+  echo "日志目录: ${ROOT}/log/"
   if [[ "${PROXY_PORT_DEFAULTED:-0}" == 1 ]]; then
     echo "代理端口配置缺失、为空或无效，按默认 10808 查询；未写入文件。"
   fi
@@ -608,7 +618,7 @@ usage() {
   switch   询问后切换 vless / hysteria2 / vmess / trojan / shadowsocks / tuic / anytls 并保留。选中当前线路时按重启处理。监听起来后报告连接是否正常
   boot     询问后开启或关闭开机自启；开启时准备启动依赖。不启动、不停止当前监听
   terminal 询问后开启或关闭新终端自动接入代理。不开启、不关闭监听
-  log      持续查看 ${LOG}
+  log      菜单查看运行、开机启动和终端自动接入设置日志
 EOF
 }
 
@@ -637,8 +647,26 @@ main() {
     terminal) terminal_mihomo ;;
     status) status_mihomo ;;
     log)
-      [[ -f "$LOG" ]] || { echo '暂无运行日志。' >&2; return 1; }
-      tail -n 50 -F -- "$LOG"
+      echo '选择要查看的日志：'
+      echo '  0) 全部（运行、开机启动、终端自动接入设置）'
+      echo '  1) 运行'
+      echo '  2) 开机启动'
+      echo '  3) 终端自动接入设置'
+      local choice files=() file
+      read -r -p '输入序号 [0]：' choice || { echo '已取消。'; return 0; }
+      case "${choice:-0}" in
+        0) files=("$LOG" "$BOOT_LOG" "$TERMINAL_LOG") ;;
+        1) files=("$LOG") ;;
+        2) files=("$BOOT_LOG") ;;
+        3) files=("$TERMINAL_LOG") ;;
+        *) echo '输入无效，未查看日志。' >&2; return 1 ;;
+      esac
+      local existing=()
+      for file in "${files[@]}"; do
+        [[ ! -f "$file" ]] || existing+=("$file")
+      done
+      ((${#existing[@]})) || { echo '所选项目暂无日志。' >&2; return 1; }
+      tail -v -n 50 -F -- "${existing[@]}"
       ;;
     __write_proxychains) lock_management; ensure_port; _mihomo_check_running_ports "$ROOT" "$PROXY_PORT"; sync_proxychains; printf '%s\n' "$PROXY_PORT" ;;
     *)

@@ -124,7 +124,7 @@ source ./proxy.env
 |---|---|
 | `bash ./client.sh status` | 查看配置线路、端口监听、进程 PID、开机自启和终端自动接入设置，不修改配置。 |
 | `bash ./client.sh test` | 分别测试 HTTP 和 SOCKS 代理，均访问 `https://www.google.com`，显示连接结果和首字节耗时；任一代理测试失败，命令返回失败。不改线路，也不启停监听。 |
-| `bash ./client.sh log` | 持续查看 `log/mihomo.log`，按 `Ctrl+C` 退出查看。 |
+| `bash ./client.sh log` | 菜单选择运行、开机启动或终端自动接入设置日志，回车默认全部；按 `Ctrl+C` 退出查看。 |
 
 **端口监听不等于节点可用。** `start` 新启动服务，以及 `restart`、`switch` 后，都会执行与 `test` 相同的连接检查。请求正常完成且最终返回 HTTP 200 才算成功。七类线路使用同一测试标准。需要在脚本中用退出码判断联网是否成功时，使用 `test`；`start`、`restart`、`switch` 的联网检查失败不会自动停止已启动的服务，也不会因此返回失败。
 
@@ -179,6 +179,8 @@ source ./proxy.env
 | `proxy.env`、`lib/libproxychains4.so` | 当前终端接入代理的脚本和库。 | 不改，按上节命令使用 |
 | `runtime/` | 运行中的配置及 `mihomo.pid`，可能含节点凭据；代理运行时需要它。 | 不改；迁移时不需复制旧内容 |
 | `log/mihomo.log` | 运行日志；代理运行时持续写入。 | 用 `log` 查看 |
+| `log/boot.log` | 开机启动时的输出和错误。 | 用 `log` 查看 |
+| `log/terminal.log` | 终端自动接入设置的开启、关闭及设置失败记录。 | 用 `log` 查看 |
 | `config/terminal.on` | 终端自动接入功能的持久标记文件。 | 不改；用 `terminal` 命令设置 |
 
 ## 5 节点链接格式与参数
