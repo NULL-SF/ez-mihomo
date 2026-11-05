@@ -21,7 +21,7 @@ from urllib.parse import parse_qs, urlsplit
 sys.dont_write_bytecode = True
 from service import ROOT, SPECS, command, identity, owned, state_file, stop, user_config_access, write_state
 from outbound import atomic_write
-from ports import load as load_ports
+from ports import SUBSCRIPTION_PORT, load as load_ports
 
 LIVE = ROOT / 'runtime/certs/config/live/ezm-node'
 PROFILES = ('whitelist', 'blacklist')
@@ -261,14 +261,7 @@ def start():
 def status():
     try:
         pid = owned('subscription', report_permission=True)
-        if pid:
-            port = json.loads(state_file('subscription').read_text()).get('port', '未知')
-        else:
-            try:
-                port = load_ports(write_defaults=False)['subscription']
-            except (OSError, ValueError):
-                port = '配置无效'
-        print(f'subscription: {"运行中" if pid else "未运行"}；端口 {port}；TCP/HTTPS')
+        print(f'subscription: {"运行中" if pid else "未运行"}；端口 {SUBSCRIPTION_PORT}；TCP/HTTPS')
     except PermissionError:
         print('subscription: 无法确认状态（需 sudo 查看）')
 

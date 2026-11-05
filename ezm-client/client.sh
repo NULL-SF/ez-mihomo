@@ -33,7 +33,6 @@ ACTIVE="${ROOT}/config/protocol.activate"
 PIDFILE="${ROOT}/runtime/mihomo.pid"
 LOG="${ROOT}/log/mihomo.log"
 MARK="ezm-client-proxy-boot"
-TERMINAL_MARK="ezm-client-proxy-terminal"
 TERMINAL_FLAG="${ROOT}/config/terminal.on"
 BASHRC="${HOME}/.bashrc"
 MANAGEMENT_LOCK=''
@@ -185,7 +184,9 @@ cron_line() {
 
 cron_enabled() {
   command -v crontab >/dev/null || return 1
-  crontab -l 2>/dev/null | grep " # ${MARK}$" >/dev/null
+  local expected
+  expected="$(cron_line)" || return 1
+  crontab -l 2>/dev/null | grep -Fx -- "$expected" >/dev/null
 }
 
 set_cron() (
@@ -408,7 +409,17 @@ switch_mihomo() {
 }
 
 terminal_enabled() {
-  [[ -f "$TERMINAL_FLAG" ]] && grep -q "${TERMINAL_MARK}-begin" "$BASHRC" 2>/dev/null
+  [[ -f "$TERMINAL_FLAG" ]] || return 1
+  python3 - "$BASHRC" "$ROOT" <<'PY_TERMINAL_STATUS'
+import pathlib, shlex, sys
+try:
+    text = pathlib.Path(sys.argv[1]).read_text()
+    block = text.split('# ezm-client-proxy-terminal-begin', 1)[1].split('# ezm-client-proxy-terminal-end', 1)[0]
+    expected = '  source ' + shlex.quote(sys.argv[2] + '/proxy.env')
+    sys.exit(0 if expected in block.splitlines() else 1)
+except (OSError, UnicodeError, IndexError):
+    sys.exit(1)
+PY_TERMINAL_STATUS
 }
 
 set_terminal() {
@@ -625,7 +636,10 @@ main() {
     boot) boot_mihomo ;;
     terminal) terminal_mihomo ;;
     status) status_mihomo ;;
-    log) tail -n 50 -f "$LOG" ;;
+    log)
+      [[ -f "$LOG" ]] || { echo '暂无运行日志。' >&2; return 1; }
+      tail -n 50 -F -- "$LOG"
+      ;;
     __write_proxychains) lock_management; ensure_port; _mihomo_check_running_ports "$ROOT" "$PROXY_PORT"; sync_proxychains; printf '%s\n' "$PROXY_PORT" ;;
     *)
       usage

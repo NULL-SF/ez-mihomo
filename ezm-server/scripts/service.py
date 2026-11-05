@@ -172,7 +172,9 @@ if __name__=='__main__':
      if start(p):started.append(p)
    if a.action=='status':
     from outbound import describe, load_port
-    print(describe(load_port(check_ports=False)))
+    try:print(describe(load_port(check_ports=False)))
+    except PermissionError:print('出站配置：需 sudo 查看')
+    except (OSError,ValueError):print('出站配置：无法读取或配置无效，请检查 config/ports/local_relay.port')
     try:
      result=subprocess.run([command(protocols[0])[0],'-v'],capture_output=True,text=True,check=True,timeout=3)
      version=re.search(r'\bv[0-9][^\s]*',result.stdout)
