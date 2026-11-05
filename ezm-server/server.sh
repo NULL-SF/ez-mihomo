@@ -226,10 +226,12 @@ case "$cmd" in
     echo '  7) AnyTLS'
     echo '  8) 白名单订阅链接（名单内直连，其余代理）'
     echo '  9) 黑名单订阅链接（名单内代理，其余直连）'
+    echo '  10) 全部订阅链接'
     read -r -p '输入序号 [0]：' choice || { echo '已取消。'; exit 0; }
     protocols=(vless vmess hysteria2 trojan shadowsocks tuic anytls subscriptions/whitelist subscriptions/blacklist)
     case "${choice:-0}" in
       0) selected=all ;;
+      10) selected=subscriptions ;;
       [1-9]) selected="${protocols[choice-1]}" ;;
       *) echo '输入无效，未查看链接。' >&2; exit 1 ;;
     esac
@@ -240,10 +242,11 @@ from pathlib import Path
 root=Path(sys.argv[1]);selected=sys.argv[2]
 sys.path.insert(0,str(root/'scripts'))
 from service import SPECS
-names=(*SPECS,'subscriptions/whitelist','subscriptions/blacklist')
-if selected!='all' and selected not in names:
+subscriptions=('subscriptions/whitelist','subscriptions/blacklist')
+names=(*SPECS,*subscriptions)
+if selected not in ('all','subscriptions') and selected not in names:
     sys.exit('未知协议。')
-protocols=tuple(SPECS) if selected=='all' else (selected,)
+protocols=tuple(SPECS) if selected=='all' else subscriptions if selected=='subscriptions' else (selected,)
 try:
     values=[]
     for protocol in protocols:
