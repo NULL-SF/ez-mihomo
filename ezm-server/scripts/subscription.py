@@ -127,7 +127,7 @@ def client_config(docs, profile='whitelist'):
     if profile not in PROFILES:
         raise ValueError('未知订阅分流模式')
     nodes = [proxy(p, docs[p]) for p in SPECS]
-    group = {'name': '节点选择', 'type': 'select', 'proxies': [*SPECS, 'DIRECT', 'REJECT']}
+    group = {'name': '节点选择', 'type': 'select', 'proxies': ['DIRECT', 'REJECT', *SPECS]}
     sets = {'private': 'domain', 'lancidr': 'ipcidr'}
     rules = ['RULE-SET,private,DIRECT', 'RULE-SET,lancidr,DIRECT,no-resolve']
     local_dns = ['https://dns.alidns.com/dns-query', 'https://doh.pub/dns-query']
