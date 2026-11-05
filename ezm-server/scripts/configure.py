@@ -207,10 +207,11 @@ def export_links():
  directory=ROOT/'output/links'
  values={p:node_link(p,json.loads((ROOT/'runtime'/p/'config.json').read_text())) for p in SPECS}
  options=settings()
- values.update({'subscription-'+profile:url for profile,url in options['urls'].items()})
+ values.update({'subscriptions/'+profile:url for profile,url in options['urls'].items()})
  directory.mkdir(parents=True,exist_ok=True)
  for p,value in values.items():
   path=directory/(p+'.link')
+  path.parent.mkdir(parents=True,exist_ok=True,mode=0o700)
   atomic_write(path,(value+'\n').encode(),0o600)
   user_config_access(path,0o600)
  print('节点与订阅链接已导出至 output/links/')

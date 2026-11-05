@@ -81,7 +81,7 @@ def settings(create=False):
     authority = endpoint if port == 443 else f'{endpoint}:{port}'
     base = f'https://{authority}/{secret}'
     return {'port': port, 'listen': listen, 'token': secret, 'signature': signature,
-            'urls': {profile: base + f'/mihomo-{profile}.yaml' for profile in PROFILES}}
+            'urls': {profile: base + f'/{profile}.yaml' for profile in PROFILES}}
 
 
 def proxy(protocol, doc):
@@ -179,7 +179,7 @@ def validate():
                 cached = Path(folder) / provider['path']
                 cached.parent.mkdir(parents=True, exist_ok=True)
                 cached.write_text('payload: []\n')
-            path = Path(folder) / f'mihomo-{profile}.yaml'
+            path = Path(folder) / f'{profile}.yaml'
             path.write_bytes(render(docs, profile))
             result = subprocess.run([str(ROOT / 'bin/mihomo_1.19.33'), '-t', '-d', folder, '-f', str(path)],
                                     capture_output=True, timeout=15)
@@ -343,7 +343,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.wfile.write(data)
 
     def do_GET(self):
-        routes = {f'mihomo-{profile}.yaml': profile for profile in PROFILES}
+        routes = {f'{profile}.yaml': profile for profile in PROFILES}
         matched = None
         for filename, profile in routes.items():
             expected = '/' + self.server.options['token'] + '/' + filename

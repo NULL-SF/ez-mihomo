@@ -70,10 +70,10 @@ IP 证书[有效期为 160 小时](https://letsencrypt.org/2026/01/15/6day-and-i
 
 | 订阅 | 链接文件 | 分流方式（规则模式） |
 |---|---|---|
-| 白名单 | `output/links/subscription-whitelist.link` | 直连名单中的域名和国内 IP 直连，其余代理。 |
-| 黑名单 | `output/links/subscription-blacklist.link` | 代理名单中的域名和 Telegram IP 代理，其余直连。 |
+| 白名单 | `output/links/subscriptions/whitelist.link` | 直连名单中的域名和国内 IP 直连，其余代理。 |
+| 黑名单 | `output/links/subscriptions/blacklist.link` | 代理名单中的域名和 Telegram IP 代理，其余直连。 |
 
-下载文件分别为 `mihomo-whitelist.yaml` 和 `mihomo-blacklist.yaml`。两份订阅均优先直连局域网域名和地址，包含相同的七个节点；「节点选择」组提供七个节点及 `DIRECT`（直连）、`REJECT`（拒绝连接）选项，表中的代理流量使用该组所选出口。
+下载文件分别为 `whitelist.yaml` 和 `blacklist.yaml`。两份订阅均优先直连局域网域名和地址，包含相同的七个节点；「节点选择」组提供七个节点及 `DIRECT`（直连）、`REJECT`（拒绝连接）选项，表中的代理流量使用该组所选出口。
 
 名单采用社区项目 [Loyalsoldier/clash-rules](https://github.com/Loyalsoldier/clash-rules)，由客户端在运行期间每隔 24 小时尝试更新，无需在服务端自行维护。
 
@@ -160,7 +160,7 @@ sudo bash ./server.sh <命令>
 | `runtime/` | 各协议及订阅运行目录、证书目录和运行状态。 | 需保留，不要当缓存清空 |
 | `log/` | 各协议日志、订阅日志 `subscription.log` 和开机启动日志 `boot.log`。 | 按需查看 |
 | `log/certs/` | `renewal.log` 为检查及续期结果，`letsencrypt.log` 为 Certbot 详细日志及其轮转文件。 | 用 `log` 菜单查看 |
-| `output/links/` | 七种协议的 `.link` 节点链接、`subscription-whitelist.link` 及 `subscription-blacklist.link`。 | 直接复制，不改；缺失时执行 `start` 重新导出 |
+| `output/links/` | 七种协议的 `.link` 节点链接、`subscriptions/whitelist.link` 及 `subscriptions/blacklist.link`。 | 直接复制，不改；缺失时执行 `start` 重新导出 |
 
 核心来源：[MetaCubeX/mihomo v1.19.33 官方发行](https://github.com/MetaCubeX/mihomo/releases/tag/v1.19.33)。
 
@@ -235,8 +235,8 @@ sudo bash ./server.sh boot
 启动成功后，节点链接和订阅链接保存在 `output/links/` 中，可直接打开对应的 `.link` 文件查看：
 
 - `协议名.link`：对应协议的节点链接。
-- `subscription-whitelist.link`：白名单订阅链接。
-- `subscription-blacklist.link`：黑名单订阅链接。
+- `subscriptions/whitelist.link`：白名单订阅链接。
+- `subscriptions/blacklist.link`：黑名单订阅链接。
 
 也可通过菜单查看：
 
