@@ -8,6 +8,8 @@
 
 本项目由同一个 mihomo 进程在 `127.0.0.1` 提供 SOCKS / HTTP 混合代理入口，同一端口自动识别协议，使用当前选定节点。项目自带 mihomo 1.19.33，仅支持 Linux x86_64。流量从当前节点发出，不配置分流；`ping` 不走此代理。
 
+如需快速部署使用，可直接跳到[迁移与部署](#6-迁移与部署)。
+
 ## 1 基本配置
 
 ### 1.1 当前线路
@@ -185,7 +187,7 @@ source ./proxy.env
 
 ### 5.1 链接格式
 
-每个 `config/links/*.link` 只放一条对应协议的完整节点链接，不支持订阅地址。域名、IPv4 和 `[IPv6]` 均可；特殊字符须 URL 编码，`#名称` 只作备注。
+每个 `config/links/*.link` 只放一条对应协议的完整节点链接，不支持订阅链接。域名、IPv4 和 `[IPv6]` 均可；特殊字符须 URL 编码，`#名称` 只作备注。
 
 | 线路 | 支持的格式 |
 |---|---|
@@ -316,7 +318,9 @@ VMess JSON 也接受正文中与所选传输匹配的标量参数。
 
 未知参数、重复字段、别名冲突或不适用于当前传输的参数会报错；Shadowsocks 按 SIP002 忽略未知的附加 URI 查询参数。格式受支持、核心校验通过，不代表节点一定能联网；最终以 `start` / `test` 的联网结果为准。
 
-## 6 迁移
+## 6 迁移与部署
+
+### 6.1 部署与启动
 
 若尚未安装下载和解压工具，先按系统准备（root 用户可省略 sudo）：
 
@@ -329,7 +333,7 @@ sudo dnf install -y curl ca-certificates tar gzip
 # 使用 yum 的系统将 dnf 换成 yum
 ```
 
-可使用安装脚本，无需 Git：
+运行安装脚本，无需 Git：
 
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/NULL-SF/ez-mihomo/main/install.sh)
@@ -337,28 +341,54 @@ bash <(curl -fsSL https://raw.githubusercontent.com/NULL-SF/ez-mihomo/main/insta
 
 选择 `2`（客户端），安装到当前目录的 `ezm-client/`。注意确保目录完整路径不含空白字符或冒号，防止 ProxyChains 工具失效。
 
-下载后进入目录，并赋予项目可执行权限：
+下载或复制后进入目录。手动复制或上传可能丢失执行权限，启动前统一补齐：
 
 ```bash
 cd ezm-client
 chmod +x client.sh scripts/*.sh bin/mihomo_1.19.33
 ```
 
-使用时至少填好 `config/protocol.activate` 指定线路的链接，其他线路的链接可稍后再填；同时再次确认 `config/listening.port`。随后启动代理。
+将节点链接填写到 `config/links/协议名.link`，至少填好 `config/protocol.activate` 指定的当前线路，其他线路可稍后再填。若使用本项目服务端，可复制其 `output/links/` 中对应协议的 `.link` 文件到客户端的 `config/links/`。确认 `config/listening.port` 后启动服务：
 
 ```bash
 bash ./client.sh start
 ```
 
-确认 `start` 报告 HTTP、SOCKS 两种协议均连接正常后，再登记开机启动：
+**开机自启（可选）**
 
 ```bash
 bash ./client.sh boot
 ```
 
-在 `boot` 的提示中选择开启。它不启停当前代理。
+在提示中选择开启。此设置不启停当前代理。
 
-若希望今后打开新终端时自动接入代理，执行 `bash ./client.sh terminal` 并选择开启。若希望只代理当前终端，执行 `source ./proxy.env`。若希望恢复当前终端在接入代理前的环境，执行 `source ./proxy.env off`。
+### 6.2 终端使用代理
+
+仅启动服务不会自动为当前终端设置代理。
+
+**当前终端接入代理**
+
+在需要使用代理的终端执行：
+
+```bash
+source ./proxy.env
+```
+
+需要恢复该终端接入前的环境时，执行：
+
+```bash
+source ./proxy.env off
+```
+
+**新终端自动接入代理（可选）**
+
+如需今后打开新终端时自动接入代理，执行并选择开启：
+
+```bash
+bash ./client.sh terminal
+```
+
+此设置不影响已打开的终端；当前终端仍需执行上述 `source` 命令。
 
 ## 7 Codex 适配
 

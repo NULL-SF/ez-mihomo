@@ -24,6 +24,8 @@ from outbound import atomic_write
 from ports import load as load_ports
 
 LIVE = ROOT / 'runtime/certs/config/live/ezm-node'
+PROFILES = ('whitelist', 'blacklist')
+RULES_URL = 'https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release'
 
 
 def token(create=False):
@@ -74,10 +76,12 @@ def settings(create=False):
     tls_name = names.pop()
     secret = token(create)
     listen = '::' if ':' in address else '0.0.0.0'
-    signature = hashlib.sha256(f'{listen}:{port}:{secret}'.encode()).hexdigest()
+    signature = hashlib.sha256(f'profiles-v2:{listen}:{port}:{secret}'.encode()).hexdigest()
     endpoint = '[' + tls_name + ']' if ':' in tls_name else tls_name
+    authority = endpoint if port == 443 else f'{endpoint}:{port}'
+    base = f'https://{authority}/{secret}'
     return {'port': port, 'listen': listen, 'token': secret, 'signature': signature,
-            'url': f'https://{endpoint}:{port}/{secret}/mihomo.yaml'}
+            'urls': {profile: base + f'/mihomo-{profile}.yaml' for profile in PROFILES}}
 
 
 def proxy(protocol, doc):
@@ -119,27 +123,68 @@ def proxy(protocol, doc):
     return node
 
 
-def render(docs):
+def client_config(docs, profile='whitelist'):
+    if profile not in PROFILES:
+        raise ValueError('未知订阅分流模式')
     nodes = [proxy(p, docs[p]) for p in SPECS]
-    group = {'name': 'PROXY', 'type': 'select', 'proxies': list(SPECS)}
-    # JSON flow mappings are valid YAML; no third-party YAML parser is needed.
-    lines = ['mixed-port: 10808', 'bind-address: "127.0.0.1"', 'allow-lan: false',
-             'mode: rule', 'log-level: warning', 'proxies:']
-    lines += ['  - ' + json.dumps(n, ensure_ascii=False) for n in nodes]
-    lines += ['proxy-groups:', '  - ' + json.dumps(group), 'rules:', '  - "MATCH,PROXY"']
+    group = {'name': '节点选择', 'type': 'select', 'proxies': [*SPECS, 'DIRECT', 'REJECT']}
+    sets = {'private': 'domain', 'lancidr': 'ipcidr'}
+    rules = ['RULE-SET,private,DIRECT', 'RULE-SET,lancidr,DIRECT,no-resolve']
+    local_dns = ['https://dns.alidns.com/dns-query', 'https://doh.pub/dns-query']
+    proxy_dns = ['https://1.1.1.1/dns-query#节点选择', 'https://8.8.8.8/dns-query#节点选择']
+    policy = {'rule-set:private': ['system']}
+    if profile == 'whitelist':
+        sets.update(direct='domain', cncidr='ipcidr')
+        rules += ['RULE-SET,direct,DIRECT', 'RULE-SET,cncidr,DIRECT', 'MATCH,节点选择']
+        nameservers = proxy_dns
+        policy['rule-set:direct'] = local_dns
+    else:
+        sets.update(proxy='domain', telegramcidr='ipcidr')
+        rules += ['RULE-SET,proxy,节点选择', 'RULE-SET,telegramcidr,节点选择', 'MATCH,DIRECT']
+        nameservers = local_dns
+        policy['rule-set:proxy'] = proxy_dns
+    providers = {name: {'type': 'http', 'behavior': behavior, 'format': 'yaml',
+                       'url': f'{RULES_URL}/{name}.txt', 'path': f'./rulesets/{name}.yaml',
+                       'interval': 86400, 'proxy': '节点选择'}
+                 for name, behavior in sets.items()}
+    return {'mixed-port': 10808, 'bind-address': '127.0.0.1', 'allow-lan': False,
+            'mode': 'rule', 'log-level': 'warning', 'profile': {'store-selected': True},
+            'dns': {'enable': True, 'enhanced-mode': 'redir-host',
+                    'default-nameserver': ['223.5.5.5', '119.29.29.29'],
+                    'proxy-server-nameserver': local_dns, 'direct-nameserver': local_dns,
+                    'nameserver': nameservers, 'nameserver-policy': policy},
+            'proxies': nodes, 'proxy-groups': [group], 'rule-providers': providers, 'rules': rules}
+
+
+def render(docs, profile='whitelist'):
+    # JSON flow values are valid YAML; no third-party YAML parser is needed.
+    lines = []
+    for key, value in client_config(docs, profile).items():
+        if isinstance(value, list):
+            lines.append(key + ':')
+            lines += ['  - ' + json.dumps(item, ensure_ascii=False) for item in value]
+        else:
+            lines.append(key + ': ' + json.dumps(value, ensure_ascii=False))
     return ('\n'.join(lines) + '\n').encode()
 
 
 def validate():
-    data = render(documents())
+    docs = documents()
     # Check the exported client config with the bundled core, without listeners.
     with tempfile.TemporaryDirectory(dir=ROOT / 'runtime') as folder:
-        path = Path(folder) / 'mihomo.yaml'
-        path.write_bytes(data)
-        result = subprocess.run([str(ROOT / 'bin/mihomo_1.19.33'), '-t', '-d', folder, '-f', str(path)],
-                                capture_output=True, timeout=15)
-        if result.returncode:
-            raise ValueError('订阅客户端配置未通过 mihomo 校验')
+        for profile in PROFILES:
+            # Validate locally: server startup must not need client-side rule
+            # downloads or a working connection back through its own nodes.
+            for provider in client_config(docs, profile)['rule-providers'].values():
+                cached = Path(folder) / provider['path']
+                cached.parent.mkdir(parents=True, exist_ok=True)
+                cached.write_text('payload: []\n')
+            path = Path(folder) / f'mihomo-{profile}.yaml'
+            path.write_bytes(render(docs, profile))
+            result = subprocess.run([str(ROOT / 'bin/mihomo_1.19.33'), '-t', '-d', folder, '-f', str(path)],
+                                    capture_output=True, timeout=15)
+            if result.returncode:
+                raise ValueError(f'{profile} 订阅客户端配置未通过 mihomo 校验')
 
 
 def context():
@@ -169,7 +214,7 @@ def check_port(port, listen):
         try:
             probe.bind((listen, port))
         except OSError as error:
-            raise ValueError('订阅 TCP 端口不可用，请检查监听占用') from error
+            raise ValueError(f'订阅 TCP 端口 {port} 不可用，请检查监听占用或绑定权限') from error
 
 
 def preflight(options):
@@ -292,23 +337,29 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def log_message(self, *_):
         pass
 
-    def respond(self, code, data=b''):
+    def respond(self, code, data=b'', filename=None):
         self.send_response(code)
         self.send_header('Content-Type', 'application/yaml; charset=utf-8')
         self.send_header('Content-Length', str(len(data)))
         self.send_header('Cache-Control', 'no-store')
         self.send_header('X-Content-Type-Options', 'nosniff')
-        if code == 200:
-            self.send_header('Content-Disposition', 'attachment; filename="mihomo.yaml"')
+        if code == 200 and filename:
+            self.send_header('Content-Disposition', f'attachment; filename="{filename}"')
         self.end_headers()
         if self.command != 'HEAD':
             self.wfile.write(data)
 
     def do_GET(self):
-        expected = '/' + self.server.options['token'] + '/mihomo.yaml'
-        if not hmac.compare_digest(self.path.encode(), expected.encode()):
+        routes = {f'mihomo-{profile}.yaml': profile for profile in PROFILES}
+        matched = None
+        for filename, profile in routes.items():
+            expected = '/' + self.server.options['token'] + '/' + filename
+            if hmac.compare_digest(self.path.encode(), expected.encode()):
+                matched = (filename, profile)
+        if matched is None:
             self.respond(404)
             return
+        filename, profile = matched
         # Readers never see partial multi-node publication during start/rebuild.
         try:
             with (ROOT / 'runtime/manage.lock').open('a+') as lock:
@@ -322,11 +373,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
                             self.respond(503)
                             return
                         time.sleep(.02)
-                data = render(documents())
+                data = render(documents(), profile)
         except (OSError, ValueError, KeyError, TypeError, IndexError, StopIteration, subprocess.SubprocessError):
             self.respond(503)
             return
-        self.respond(200, data)
+        self.respond(200, data, filename)
 
     do_HEAD = do_GET
 

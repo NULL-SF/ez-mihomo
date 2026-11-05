@@ -10,50 +10,6 @@ SPECS=('vless','vmess','hysteria2','trojan','shadowsocks','tuic','anytls')
 def state_file(p):
  return ROOT/'runtime'/p/('subscription.pid' if p=='subscription' else 'mihomo.pid')
 
-def migrate_certificate_logs():
- directory=ROOT/'log/certs';old=ROOT/'log/acme'
- if old.is_dir():
-  if directory.exists():raise ValueError('证书新旧日志目录同时存在，请先检查 log/certs 与 log/acme')
-  old.rename(directory)
- else:directory.mkdir(parents=True,exist_ok=True,mode=0o700)
- previous=ROOT/'log/certificate.log';current=directory/'renewal.log'
- if previous.is_file():
-  if current.exists():raise ValueError('证书新旧续期日志同时存在，请先检查日志文件')
-  previous.rename(current)
-
-def use_original_certificates():
- """One-time switch from the former deployed copies without changing credentials."""
- directory=ROOT/'runtime/certs'
- old_paths={directory/'server.crt',directory/'server.key'}
- changes=[]
- for protocol in SPECS:
-  path=ROOT/'runtime'/protocol/'config.json'
-  if not path.is_file():continue
-  try:doc=json.loads(path.read_text())
-  except (OSError,ValueError):continue
-  if not isinstance(doc,dict) or not isinstance(doc.get('listeners'),list):continue
-  changed=False
-  for listener in doc['listeners']:
-   if not isinstance(listener,dict):continue
-   for field,name in [('certificate','fullchain.pem'),('private-key','privkey.pem')]:
-    if not isinstance(listener.get(field),str):continue
-    value=Path(listener[field]);absolute=(path.parent/value).resolve() if not value.is_absolute() else value
-    if absolute in old_paths:
-     listener[field]='../certs/config/live/ezm-node/'+name;changed=True
-  if changed:changes.append((protocol,path,doc))
- if changes:
-  print("切换为直接读取原始证书，将重启受影响节点；节点链接不变。",flush=True)
-  from certificate import verify_source
-  verify_source()
-  for protocol,path,doc in changes:
-   if owned(protocol):stop(protocol)
-   temporary=path.with_suffix('.migrate')
-   try:
-    temporary.write_text(json.dumps(doc,ensure_ascii=False,indent=2)+'\n');temporary.chmod(0o600);temporary.replace(path)
-   finally:temporary.unlink(missing_ok=True)
- if (directory/'config/live/ezm-node/fullchain.pem').is_file() and (directory/'config/live/ezm-node/privkey.pem').is_file():
-  for path in old_paths:path.unlink(missing_ok=True)
-
 def user_config_access(path,mode=0o600):
  """Keep project files owned by the installing user."""
  if path.is_symlink():return

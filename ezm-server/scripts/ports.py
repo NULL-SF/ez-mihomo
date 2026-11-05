@@ -2,7 +2,8 @@
 from pathlib import Path
 from service import ROOT, SPECS, user_config_access
 
-DEFAULTS = {'subscription': 11800, **{p: 11801 + i for i, p in enumerate(SPECS)}, 'local_relay': 0}
+SUBSCRIPTION_PORT = 443
+DEFAULTS = {p: 11801 + i for i, p in enumerate(SPECS)} | {'local_relay': 0}
 
 
 def load(directory=None, base_port=None, write_defaults=True):
@@ -14,7 +15,7 @@ def load(directory=None, base_port=None, write_defaults=True):
         if not 1024 <= base_port <= 65536 - len(SPECS):
             raise ValueError('连续端口范围必须在 1024—65535 内')
         defaults.update({p: base_port + i for i, p in enumerate(SPECS)})
-    values, missing = {}, []
+    values, missing = {'subscription': SUBSCRIPTION_PORT}, []
     for name, default in defaults.items():
         path = directory / (name + '.port')
         raw = path.read_text().strip() if path.exists() else ''

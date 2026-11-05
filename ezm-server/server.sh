@@ -118,12 +118,6 @@ start_services() {
   lock_management
   prepare_firewall
   local certificate_checked=0
-  "$PYTHON" - "$ROOT" <<'PYLOGS' || return $?
-import sys
-sys.path.insert(0,sys.argv[1]+'/scripts')
-from service import migrate_certificate_logs
-migrate_certificate_logs()
-PYLOGS
   "$PYTHON" "$ROOT/scripts/certificate.py" prepare-cron 9>&- || return $?
   # Validate or renew original certificates before validating node configurations.
   if [[ -f "$ROOT/runtime/certs/config/renewal/ezm-node.conf" ]]; then
@@ -209,7 +203,7 @@ case "$cmd" in
     log_files=()
     for protocol in "${selected[@]}"; do
       if [[ "$protocol" == certificate ]]; then
-        for file in "$ROOT/log/certs/renewal.log" "$ROOT/log/certs/letsencrypt.log" "$ROOT/log/certificate.log" "$ROOT/log/acme/letsencrypt.log"; do
+        for file in "$ROOT/log/certs/renewal.log" "$ROOT/log/certs/letsencrypt.log"; do
           [[ ! -f "$file" ]] || log_files+=("$file")
         done
       else
@@ -220,7 +214,7 @@ case "$cmd" in
     exec tail -v -n 50 -F -- "${log_files[@]}"
     ;;
   links)
-    echo '选择要查看的节点链接或订阅地址：'
+    echo '选择要查看的节点链接或订阅链接：'
     echo '  0) 全部节点链接'
     echo '  1) VLESS'
     echo '  2) VMess'
@@ -229,12 +223,13 @@ case "$cmd" in
     echo '  5) Shadowsocks'
     echo '  6) TUIC'
     echo '  7) AnyTLS'
-    echo '  8) 订阅地址'
+    echo '  8) 白名单订阅链接（名单内直连，其余代理）'
+    echo '  9) 黑名单订阅链接（名单内代理，其余直连）'
     read -r -p '输入序号 [0]：' choice || { echo '已取消。'; exit 0; }
-    protocols=(vless vmess hysteria2 trojan shadowsocks tuic anytls subscription)
+    protocols=(vless vmess hysteria2 trojan shadowsocks tuic anytls subscription-whitelist subscription-blacklist)
     case "${choice:-0}" in
       0) selected=all ;;
-      [1-8]) selected="${protocols[choice-1]}" ;;
+      [1-9]) selected="${protocols[choice-1]}" ;;
       *) echo '输入无效，未查看链接。' >&2; exit 1 ;;
     esac
     require_python
@@ -244,7 +239,7 @@ from pathlib import Path
 root=Path(sys.argv[1]);selected=sys.argv[2]
 sys.path.insert(0,str(root/'scripts'))
 from service import SPECS
-names=(*SPECS,'subscription')
+names=(*SPECS,'subscription-whitelist','subscription-blacklist')
 if selected!='all' and selected not in names:
     sys.exit('未知协议。')
 protocols=tuple(SPECS) if selected=='all' else (selected,)
@@ -270,7 +265,7 @@ start、stop、restart、boot 需要 root 权限，普通用户请在命令前�
   stop     停止
   restart  重启
   status   查看状态
-  links    查看节点链接或订阅地址
+  links    查看节点链接或订阅链接
   log      持续查看日志
   boot     设置开机自启
 HELP

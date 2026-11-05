@@ -29,7 +29,6 @@ HOME = ROOT / 'runtime/certs'
 CONFIG = HOME / 'config'
 LIVE = CONFIG / 'live/ezm-node'
 MARK = ' # ezm-server-certificate-renew'
-LEGACY_RETRY_MARK = ' # ezm-server-certificate-retry'
 RENEW_BEFORE = 48 * 3600
 CERTBOT_VERSION = '5.9.0'
 SIGN_TIMEOUT = 300
@@ -71,10 +70,7 @@ def certificate_lock(nonblocking=False):
             yield None
             return
         HOME.mkdir(mode=0o700, parents=True, exist_ok=True)
-        previous_lock = HOME / 'renew.lock'
         current_lock = HOME / 'reapply.lock'
-        if previous_lock.is_file() and not current_lock.exists():
-            previous_lock.rename(current_lock)
         with current_lock.open('a+') as lock:
             os.chmod(lock.name, 0o600)
             try:
@@ -82,18 +78,6 @@ def certificate_lock(nonblocking=False):
             except BlockingIOError:
                 yield None
                 return
-            # Preserve cooldown from earlier layouts before removing old state.
-            for previous in (previous_lock, HOME / 'retry-at'):
-                if not previous.is_file():
-                    continue
-                try:
-                    deadline = float(previous.read_text())
-                    datetime.fromtimestamp(deadline)
-                    if math.isfinite(deadline) and deadline > retry_at():
-                        write_retry_at(deadline)
-                except (ValueError, OverflowError):
-                    pass
-                previous.unlink()
             yield lock
     finally:
         os.close(fd)
@@ -245,7 +229,7 @@ def set_check_schedule():
         if not (HOME / 'apply.on').is_file():
             return False
         current = cron_read()
-        others = [x for x in current.splitlines() if not x.endswith((MARK, LEGACY_RETRY_MARK))]
+        others = [x for x in current.splitlines() if not x.endswith(MARK)]
         updated = '\n'.join([*others, line]) + '\n'
         if updated != current:
             run(['crontab', '-'], input=updated, text=True)
@@ -335,7 +319,6 @@ def renewal_group_active(group):
 def pause():
     HOME.mkdir(mode=0o700, parents=True, exist_ok=True)
     (HOME / 'apply.on').unlink(missing_ok=True)
-    (HOME / 'paused').unlink(missing_ok=True)
     error = None
     # Validate the exact project command and session, even if its PID record was lost.
     workers = {}
@@ -377,7 +360,7 @@ def pause():
         if shutil.which('crontab'):
             try:
                 current = cron_read()
-                kept = [line for line in current.splitlines() if not line.endswith((MARK, LEGACY_RETRY_MARK))]
+                kept = [line for line in current.splitlines() if not line.endswith(MARK)]
                 if len(kept) != len(current.splitlines()):
                     if kept:
                         run(['crontab', '-'], input='\n'.join(kept) + '\n', text=True)
@@ -544,7 +527,6 @@ def valid_renewal_config():
 
 
 def enable_application():
-    (HOME / 'paused').unlink(missing_ok=True)
     (HOME / 'apply.on').touch(mode=0o600)
 
 

@@ -8,7 +8,7 @@ import urllib.request
 from types import SimpleNamespace
 sys.dont_write_bytecode=True
 sys.path.insert(0,str(Path(__file__).resolve().parent))
-from service import ROOT, SPECS, stop, owned, transports, use_original_certificates, user_config_access
+from service import ROOT, SPECS, stop, owned, transports, user_config_access
 from outbound import load_port as load_relay_port, render as render_outbound
 
 def write(path,value):
@@ -206,7 +206,8 @@ def export_links():
  from subscription import settings
  directory=ROOT/'output/links'
  values={p:node_link(p,json.loads((ROOT/'runtime'/p/'config.json').read_text())) for p in SPECS}
- values['subscription']=settings()['url']
+ options=settings()
+ values.update({'subscription-'+profile:url for profile,url in options['urls'].items()})
  directory.mkdir(parents=True,exist_ok=True)
  for p,value in values.items():
   path=directory/(p+'.link')
@@ -335,7 +336,6 @@ def initialize():
  ports=load_ports(ROOT/'config/ports')
  load_relay_port(write_default=True)
  recover_certificate()
- use_original_certificates()
  missing=[protocol for protocol in SPECS if not complete(protocol,ports[protocol])]
  if not missing:return
  print('\n'+'='*60,flush=True)

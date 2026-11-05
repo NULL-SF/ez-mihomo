@@ -59,14 +59,6 @@ def required_ports():
     ports = load_ports(ROOT / 'config/ports')
     from ports import load
     required = {'80/tcp', str(load()['subscription']) + '/tcp'}
-    # Retain the live subscription port until a port change has been applied.
-    try:
-        from service import owned, state_file
-        if owned('subscription'):
-            active = json.loads(state_file('subscription').read_text())['port']
-            required.add(str(active) + '/tcp')
-    except (OSError, ValueError, KeyError, TypeError):
-        pass
     for protocol, port in ports.items():
         transports = ('tcp', 'udp') if protocol == 'shadowsocks' else (
             ('udp',) if protocol in ('hysteria2', 'tuic') else ('tcp',))

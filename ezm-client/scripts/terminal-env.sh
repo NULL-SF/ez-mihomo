@@ -17,7 +17,7 @@ _mihomo_remove_preload() {
       unset LD_PRELOAD
     fi
   fi
-  if [[ "$found" == 1 || "${PROXYCHAINS_CONF_FILE:-}" == "${root}/runtime/proxychains.conf" || "${PROXYCHAINS_CONF_FILE:-}" == "${root}/tmp/proxychains.conf" ]]; then
+  if [[ "$found" == 1 || "${PROXYCHAINS_CONF_FILE:-}" == "${root}/runtime/proxychains.conf" ]]; then
     unset PROXYCHAINS_CONF_FILE PROXYCHAINS_QUIET_MODE
   fi
   return 0
