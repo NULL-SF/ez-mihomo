@@ -1,17 +1,5 @@
 #!/usr/bin/env bash
 # Shell-only bootstrap: it must work before Python or flock is installed.
-run_as_root() {
-  if [[ "$EUID" == 0 ]]; then
-    "$@"
-  else
-    command -v sudo >/dev/null || {
-      echo '此操作需要 root 权限，请安装 sudo 或由 root 执行。' >&2
-      return 1
-    }
-    sudo "$@"
-  fi
-}
-
 # Elevate package installation only, preserving the management user's identity.
 install_system_packages() {
   local manager package
@@ -31,10 +19,10 @@ install_system_packages() {
   done
   printf '正在安装缺少的依赖：%s\n' "${packages[*]}"
   if [[ "$manager" == apt-get ]]; then
-    run_as_root env DEBIAN_FRONTEND=noninteractive apt-get update || return $?
-    run_as_root env DEBIAN_FRONTEND=noninteractive apt-get install -y "${packages[@]}" || return $?
+    sudo env DEBIAN_FRONTEND=noninteractive apt-get update || return $?
+    sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y "${packages[@]}" || return $?
   else
-    run_as_root "$manager" install -y "${packages[@]}" || return $?
+    sudo "$manager" install -y "${packages[@]}" || return $?
   fi
 }
 select_python() {
@@ -108,12 +96,12 @@ prepare_python_venv() {
   version="$("$PYTHON" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')" || return $?
   if command -v apt-get >/dev/null; then
     package="python${version}-venv"
-    run_as_root env DEBIAN_FRONTEND=noninteractive apt-get update || return $?
-    run_as_root env DEBIAN_FRONTEND=noninteractive apt-get install -y "$package" || return $?
+    sudo env DEBIAN_FRONTEND=noninteractive apt-get update || return $?
+    sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y "$package" || return $?
   elif command -v dnf >/dev/null; then
-    run_as_root dnf install -y "python${version}" || return $?
+    sudo dnf install -y "python${version}" || return $?
   elif command -v yum >/dev/null; then
-    run_as_root yum install -y "python${version}" || return $?
+    sudo yum install -y "python${version}" || return $?
   else
     echo '无法自动安装 Python venv，请手动准备对应模块。' >&2; return 1
   fi

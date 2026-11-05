@@ -116,30 +116,30 @@ def ensure_cron():
         print('缺少 cron，正在安装系统定时任务服务。', flush=True)
         env = dict(os.environ, DEBIAN_FRONTEND='noninteractive')
         if shutil.which('apt-get'):
-            run(['env', 'DEBIAN_FRONTEND=noninteractive', 'apt-get', 'update'], env=env)
-            run(['env', 'DEBIAN_FRONTEND=noninteractive', 'apt-get', 'install', '-y', 'cron'], env=env)
+            run(['sudo', 'env', 'DEBIAN_FRONTEND=noninteractive', 'apt-get', 'update'], env=env)
+            run(['sudo', 'env', 'DEBIAN_FRONTEND=noninteractive', 'apt-get', 'install', '-y', 'cron'], env=env)
         elif shutil.which('dnf'):
-            run(['dnf', 'install', '-y', 'cronie'], env=env)
+            run(['sudo', 'dnf', 'install', '-y', 'cronie'], env=env)
         elif shutil.which('yum'):
-            run(['yum', 'install', '-y', 'cronie'], env=env)
+            run(['sudo', 'yum', 'install', '-y', 'cronie'], env=env)
         else:
             raise ValueError('当前系统不支持自动安装 cron，请安装 crontab 和 cron 服务后重试。')
         if not shutil.which('crontab'):
             raise ValueError('cron 安装后仍未找到 crontab，请检查安装结果。')
     if shutil.which('systemctl'):
         for unit in ('cron', 'crond'):
-            result = subprocess.run(['systemctl', 'enable', '--now', unit], capture_output=True)
+            result = subprocess.run(['sudo', 'systemctl', 'enable', '--now', unit], capture_output=True)
             if result.returncode == 0 and cron_running():
                 return
     # Debian/Ubuntu VPS images may still use SysV init instead of systemd.
     if shutil.which('update-rc.d') and shutil.which('service'):
-        run(['update-rc.d', 'cron', 'defaults'])
-        run(['service', 'cron', 'start'])
+        run(['sudo', 'update-rc.d', 'cron', 'defaults'])
+        run(['sudo', 'service', 'cron', 'start'])
         if cron_running():
             return
     if shutil.which('chkconfig') and shutil.which('service'):
-        run(['chkconfig', 'crond', 'on'])
-        run(['service', 'crond', 'start'])
+        run(['sudo', 'chkconfig', 'crond', 'on'])
+        run(['sudo', 'service', 'crond', 'start'])
         if cron_running():
             return
     raise ValueError('无法启用 cron，请检查系统服务管理器；尚未登记定时任务。')

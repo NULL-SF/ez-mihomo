@@ -1,17 +1,5 @@
 #!/usr/bin/env bash
 # No Python or external utilities are needed to enter this bootstrap.
-run_as_root() {
-  if [[ "$EUID" == 0 ]]; then
-    "$@"
-  else
-    command -v sudo >/dev/null || {
-      echo '此操作需要 root 权限，请安装 sudo 或由 root 执行。' >&2
-      return 1
-    }
-    sudo "$@"
-  fi
-}
-
 CLIENT_DEPENDENCIES_PREPARED=0
 client_python_ready() {
   if [[ "${1:-ssl}" == ssl ]]; then
@@ -49,10 +37,10 @@ client_install_packages() {
   [[ -n "$CLIENT_MANAGER" ]] || { echo '无法自动安装：需要 apt-get、dnf 或 yum。' >&2; return 1; }
   printf '正在安装客户端依赖：%s\n' "${CLIENT_PACKAGES[*]}"
   if [[ "$CLIENT_MANAGER" == apt-get ]]; then
-    run_as_root env DEBIAN_FRONTEND=noninteractive apt-get update || return $?
-    run_as_root env DEBIAN_FRONTEND=noninteractive apt-get install -y "${CLIENT_PACKAGES[@]}" || return $?
+    sudo env DEBIAN_FRONTEND=noninteractive apt-get update || return $?
+    sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y "${CLIENT_PACKAGES[@]}" || return $?
   else
-    run_as_root "$CLIENT_MANAGER" install -y "${CLIENT_PACKAGES[@]}" || return $?
+    sudo "$CLIENT_MANAGER" install -y "${CLIENT_PACKAGES[@]}" || return $?
   fi
 }
 client_cron_running() {
@@ -69,14 +57,14 @@ client_enable_cron() {
   local unit
   if command -v systemctl >/dev/null; then
     for unit in cron crond; do
-      if run_as_root systemctl enable --now "$unit" && client_cron_running; then return 0; fi
+      if sudo systemctl enable --now "$unit" && client_cron_running; then return 0; fi
     done
   fi
   if command -v service >/dev/null; then
     if command -v update-rc.d >/dev/null; then
-      run_as_root update-rc.d cron defaults && run_as_root service cron start && client_cron_running && return 0
+      sudo update-rc.d cron defaults && sudo service cron start && client_cron_running && return 0
     elif command -v chkconfig >/dev/null; then
-      run_as_root chkconfig crond on && run_as_root service crond start && client_cron_running && return 0
+      sudo chkconfig crond on && sudo service crond start && client_cron_running && return 0
     fi
   fi
   echo '无法启用 cron，未登记开机自启；请检查系统服务管理器。' >&2
