@@ -70,10 +70,10 @@ IP 证书[有效期为 160 小时](https://letsencrypt.org/2026/01/15/6day-and-i
 
 | 订阅 | 链接文件 | 分流方式（规则模式） |
 |---|---|---|
-| 白名单 | `output/links/subscriptions/whitelist.link` | 直连名单中的域名和国内 IP 直连，其余代理。 |
-| 黑名单 | `output/links/subscriptions/blacklist.link` | 代理名单中的域名和 Telegram IP 代理，其余直连。 |
+| 白名单 | `output/links/subscriptions/whitelist.link` | 按上游白名单规则分流，未命中规则的流量走「节点选择」。 |
+| 黑名单 | `output/links/subscriptions/blacklist.link` | 按上游黑名单规则分流，未命中规则的流量直连。 |
 
-下载文件分别为 `whitelist.yaml` 和 `blacklist.yaml`。两份订阅均优先直连局域网域名和地址，包含相同的七个节点；「节点选择」组提供七个节点及 `DIRECT`（直连）、`REJECT`（拒绝连接）选项，表中的代理流量使用该组所选出口。
+下载文件分别为 `whitelist.yaml` 和 `blacklist.yaml`。两份订阅包含相同的七个节点，并按上游模板包含应用直连、私有域名直连和广告拦截规则；「节点选择」组提供七个节点及 `DIRECT`（直连）、`REJECT`（拒绝连接）选项，表中的代理流量使用该组所选出口。
 
 名单采用社区项目 [Loyalsoldier/clash-rules](https://github.com/Loyalsoldier/clash-rules)，由客户端在运行期间每隔 24 小时尝试更新，无需在服务端自行维护。
 

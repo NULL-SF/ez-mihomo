@@ -224,8 +224,8 @@ case "$cmd" in
     echo '  5) Shadowsocks'
     echo '  6) TUIC'
     echo '  7) AnyTLS'
-    echo '  8) 白名单订阅链接（名单内直连，其余代理）'
-    echo '  9) 黑名单订阅链接（名单内代理，其余直连）'
+    echo '  8) 白名单订阅链接（未命中规则走节点选择）'
+    echo '  9) 黑名单订阅链接（未命中规则直连）'
     echo '  10) 全部订阅链接'
     read -r -p '输入序号 [0]：' choice || { echo '已取消。'; exit 0; }
     protocols=(vless vmess hysteria2 trojan shadowsocks tuic anytls subscriptions/whitelist subscriptions/blacklist)

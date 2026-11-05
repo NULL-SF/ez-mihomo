@@ -76,7 +76,10 @@ def settings(create=False):
     tls_name = names.pop()
     secret = token(create)
     listen = '::' if ':' in address else '0.0.0.0'
-    signature = hashlib.sha256(f'profiles-v2:{listen}:{port}:{secret}'.encode()).hexdigest()
+    fingerprint = hashlib.sha256(f'{listen}:{port}:{secret}'.encode())
+    for name in ('subscription.py', 'configure.py'):
+        fingerprint.update((Path(__file__).resolve().parent / name).read_bytes())
+    signature = fingerprint.hexdigest()
     endpoint = '[' + tls_name + ']' if ':' in tls_name else tls_name
     authority = endpoint if port == 443 else f'{endpoint}:{port}'
     base = f'https://{authority}/{secret}'
@@ -128,21 +131,32 @@ def client_config(docs, profile='whitelist'):
         raise ValueError('未知订阅分流模式')
     nodes = [proxy(p, docs[p]) for p in SPECS]
     group = {'name': '节点选择', 'type': 'select', 'proxies': ['DIRECT', 'REJECT', *SPECS]}
-    sets = {'private': 'domain', 'lancidr': 'ipcidr'}
-    rules = ['RULE-SET,private,DIRECT', 'RULE-SET,lancidr,DIRECT,no-resolve']
+    # Keep the upstream whitelist/blacklist rule order; only PROXY is renamed.
+    sets = {'applications': 'classical', 'private': 'domain', 'reject': 'domain'}
+    rules = ['RULE-SET,applications,DIRECT',
+             'DOMAIN,clash.razord.top,DIRECT', 'DOMAIN,yacd.haishan.me,DIRECT',
+             'RULE-SET,private,DIRECT', 'RULE-SET,reject,REJECT']
     local_dns = ['https://dns.alidns.com/dns-query', 'https://doh.pub/dns-query']
     proxy_dns = ['https://1.1.1.1/dns-query#节点选择', 'https://8.8.8.8/dns-query#节点选择']
     policy = {'rule-set:private': ['system']}
     if profile == 'whitelist':
-        sets.update(direct='domain', cncidr='ipcidr')
-        rules += ['RULE-SET,direct,DIRECT', 'RULE-SET,cncidr,DIRECT', 'MATCH,节点选择']
+        sets.update(icloud='domain', apple='domain', google='domain', proxy='domain',
+                    direct='domain', lancidr='ipcidr', cncidr='ipcidr', telegramcidr='ipcidr')
+        rules += ['RULE-SET,icloud,DIRECT', 'RULE-SET,apple,DIRECT',
+                  'RULE-SET,google,节点选择', 'RULE-SET,proxy,节点选择',
+                  'RULE-SET,direct,DIRECT', 'RULE-SET,lancidr,DIRECT',
+                  'RULE-SET,cncidr,DIRECT', 'RULE-SET,telegramcidr,节点选择',
+                  'GEOIP,LAN,DIRECT', 'GEOIP,CN,DIRECT', 'MATCH,节点选择']
         nameservers = proxy_dns
-        policy['rule-set:direct'] = local_dns
+        for name in ('icloud', 'apple', 'direct'):
+            policy['rule-set:' + name] = local_dns
     else:
-        sets.update(proxy='domain', telegramcidr='ipcidr')
-        rules += ['RULE-SET,proxy,节点选择', 'RULE-SET,telegramcidr,节点选择', 'MATCH,DIRECT']
+        sets.update({'tld-not-cn': 'domain', 'gfw': 'domain', 'telegramcidr': 'ipcidr'})
+        rules += ['RULE-SET,tld-not-cn,节点选择', 'RULE-SET,gfw,节点选择',
+                  'RULE-SET,telegramcidr,节点选择', 'MATCH,DIRECT']
         nameservers = local_dns
-        policy['rule-set:proxy'] = proxy_dns
+        for name in ('tld-not-cn', 'gfw'):
+            policy['rule-set:' + name] = proxy_dns
     providers = {name: {'type': 'http', 'behavior': behavior, 'format': 'yaml',
                        'url': f'{RULES_URL}/{name}.txt', 'path': f'./rulesets/{name}.yaml',
                        'interval': 86400, 'proxy': '节点选择'}
@@ -172,6 +186,9 @@ def validate():
     docs = documents()
     # Check the exported client config with the bundled core, without listeners.
     with tempfile.TemporaryDirectory(dir=ROOT / 'runtime') as folder:
+        # Offline GEOIP syntax validation uses a minimal CN protobuf database
+        # containing 127.0.0.1/32, only inside this temporary directory.
+        (Path(folder) / 'geoip.dat').write_bytes(bytes.fromhex('0a0e0a02434e12080a047f0000011020'))
         for profile in PROFILES:
             # Validate locally: server startup must not need client-side rule
             # downloads or a working connection back through its own nodes.
@@ -180,7 +197,7 @@ def validate():
                 cached.parent.mkdir(parents=True, exist_ok=True)
                 cached.write_text('payload: []\n')
             path = Path(folder) / f'{profile}.yaml'
-            path.write_bytes(render(docs, profile))
+            path.write_bytes(b'geodata-mode: true\n' + render(docs, profile))
             result = subprocess.run([str(ROOT / 'bin/mihomo_1.19.33'), '-t', '-d', folder, '-f', str(path)],
                                     capture_output=True, timeout=15)
             if result.returncode:
