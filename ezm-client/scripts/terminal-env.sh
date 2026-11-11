@@ -148,7 +148,7 @@ def main():
                     if socket_type == socket.SOCK_STREAM:
                         sock.listen(1)
             except OSError as exc:
-                raise ValueError(f'SOCKS / HTTP 混合代理 {network.upper()} 端口 127.0.0.1:{port} 不可用：{exc.strerror}；未停止现有服务') from None
+                raise ValueError(f'SOCKS / HTTP 混合代理 {network.upper()} 端口 127.0.0.1:{port} 不可用：{exc.strerror}') from None
     else:
         raise ValueError('未知端口检查模式')
 

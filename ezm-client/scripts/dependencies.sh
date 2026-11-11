@@ -105,14 +105,13 @@ client_dependencies() {
     [[ "$mode" != prepare ]] || CLIENT_DEPENDENCIES_PREPARED=1
     return 0
   fi
-  printf '缺少客户端依赖：%s。将尝试通过系统包管理器自动补齐；需要 sudo 权限和可用的软件源网络。\n' "${missing[*]:-cron 服务未运行}" >&2
   client_manager
   client_packages "${tools[@]}"
   [[ "$needs_python" == 0 ]] || client_python_ready "$python_modules" || CLIENT_PACKAGES+=(python3)
   [[ "$needs_install" == 0 ]] || CLIENT_PACKAGES+=(ca-certificates)
   client_install_packages || {
     local install_status=$?
-    echo '依赖补齐失败，当前操作未继续。未认证或无法出网时，请先通过可用软件源或离线方式安装所需依赖。' >&2
+    echo '依赖补齐失败，当前操作未继续。' >&2
     return "$install_status"
   }
   [[ "$mode" != boot ]] || client_enable_cron || return $?

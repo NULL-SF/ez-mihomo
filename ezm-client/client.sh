@@ -48,7 +48,7 @@ load_port() {
 PORT_CONFIG_VALID=1
 PORT_CONFIG_NEEDED=0
 case "${1:-}" in
-  status|test|__write_proxychains)
+  test|__write_proxychains)
     PORT_CONFIG_NEEDED=1
     if ! load_port; then
       case "${1:-}" in
@@ -259,9 +259,11 @@ start_proxy() {
         note "启动失败：混合代理入口被其他进程占用。"
         return 1
       fi
-      note "已启动。模式 $(running_mode)，监听 127.0.0.1:${PROXY_PORT}（SOCKS / HTTP 混合代理）。"
       if [[ "$selected" == ssh_reverse ]]; then
-        note "SSH 反向转发上游：127.0.0.1:$reverse_port（config/ports/ssh_reverse.port）；隧道由用户建立，仅支持 TCP，不支持 UDP。"
+        note "已启动。模式 ssh_reverse，监听 127.0.0.1:${PROXY_PORT}（SOCKS / HTTP 混合代理）。"
+        note "反向转发端口: 127.0.0.1:$reverse_port（仅支持 TCP）。"
+      else
+        note "已启动。线路 $(current_profile)（$(core_for "$(current_profile)")），监听 127.0.0.1:${PROXY_PORT}（SOCKS / HTTP 混合代理）。"
       fi
       sync_proxychains || return 1
       FRESH_START=1
@@ -315,63 +317,58 @@ stop_proxy() {
   return 1
 }
 
-# 常见外网页面。跟随跳转后的最终响应为 200，视为该页能打开。
-PROBE_URL="https://www.google.com"
+# 跟随跳转后的最终响应为 200，视为该页能打开。
+PROBE_URLS=("https://www.google.com" "https://www.baidu.com")
 
 # 只报告当前连接，不改线路，也不启停监听。
 report_connection() {
   local kind label port url result code secs ms
   local failed=0 entry_failed
-  if daemon_alive && [[ "$(running_mode)" == ssh_reverse ]]; then
-    echo '当前运行 ssh_reverse：仅支持 TCP，不支持 UDP；以下测试只验证 HTTP / SOCKS 的 TCP 出网。'
-  fi
-  local urls=() proxy_args=()
+  local proxy_args=()
   for kind in http socks; do
     if [[ "$kind" == http ]]; then
       label=HTTP port="$PROXY_PORT"
-      urls=("$PROBE_URL")
       proxy_args=(--proxy "http://127.0.0.1:${PROXY_PORT}")
     else
       label=SOCKS port="$PROXY_PORT"
-      urls=("$PROBE_URL")
       proxy_args=(--socks5-hostname "127.0.0.1:${PROXY_PORT}")
     fi
-    ms="未测得"
     # 同一监听端口，分别验证 HTTP 与 SOCKS 协议。
     if ! ( PORT="$port"; port_open ); then
-      note "${label} 代理：连接失败，127.0.0.1:${port} 未在监听；访问 ${PROBE_URL} 的首字节耗时：未测得。"
+      note "${label} 代理：连接失败，127.0.0.1:${port} 未在监听。"
       failed=1
       continue
     fi
     if ! ( PORT="$port"; own_listener ); then
-      note "${label} 代理：连接失败，127.0.0.1:${port} 被其他进程占用；访问 ${PROBE_URL} 的首字节耗时：未测得。"
+      note "${label} 代理：连接失败，127.0.0.1:${port} 被其他进程占用。"
       failed=1
       continue
     fi
-    entry_failed=0
-    for url in "${urls[@]}"; do
+    for url in "${PROBE_URLS[@]}"; do
+      ms="未测得"
+      entry_failed=0
       if ! result="$(curl -sS -L --noproxy '' "${proxy_args[@]}" \
         --connect-timeout 12 --max-time 20 -o /dev/null \
         -w '%{http_code} %{time_starttransfer}' "$url" 2>/dev/null)"; then
         note "${label} 代理访问 ${url} 失败（连接、TLS 或传输未完成）。" >/dev/null
         entry_failed=1
-        continue
+      else
+        code="${result%% *}"
+        secs="${result#* }"
+        if [[ "$code" != 200 ]]; then
+          note "${label} 代理访问 ${url} 失败（响应 ${code}）。" >/dev/null
+          entry_failed=1
+        elif [[ "$secs" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+          ms="$(awk -v t="$secs" 'BEGIN { printf "%d", t * 1000 }') 毫秒"
+        fi
       fi
-      code="${result%% *}"
-      secs="${result#* }"
-      if [[ "$code" != 200 ]]; then
-        note "${label} 代理访问 ${url} 失败（响应 ${code}）。" >/dev/null
-        entry_failed=1
-      elif [[ "$url" == "$PROBE_URL" && "$secs" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
-        ms="$(awk -v t="$secs" 'BEGIN { printf "%d", t * 1000 }') 毫秒"
+      if [[ "$entry_failed" == 0 ]]; then
+        note "${label} 代理：连接正常；访问 ${url} 的首字节耗时：${ms}。"
+      else
+        note "${label} 代理：连接失败；访问 ${url} 的首字节耗时：${ms}。详见日志。"
+        failed=1
       fi
     done
-    if [[ "$entry_failed" == 0 ]]; then
-      note "${label} 代理：连接正常；访问 ${PROBE_URL} 的首字节耗时：${ms}。"
-    else
-      note "${label} 代理：连接失败；访问 ${PROBE_URL} 的首字节耗时：${ms}。详见日志。"
-      failed=1
-    fi
   done
   return "$failed"
 }
@@ -386,9 +383,9 @@ running_mode() {
 
 select_mode() {
   local choice
-  echo "配置模式：$(_mihomo_load_mode "$ROOT")"
+  echo "当前配置模式: $(_mihomo_load_mode "$ROOT")"
   echo '  1) node'
-  echo '  2) ssh_reverse（仅支持 TCP，不支持 UDP；需自行建立 SSH 反向隧道）'
+  echo '  2) ssh_reverse'
   printf '输入序号或模式名：'
   read -r choice || { echo '已取消，未作更改。'; return 0; }
   case "$choice" in
@@ -402,9 +399,7 @@ select_mode() {
     local reverse_port
     reverse_port="$(_mihomo_reverse_port "$ROOT")" || return 1
     _mihomo_write_text "$ROOT/config/ports/ssh_reverse.port" "$reverse_port"
-    echo "SSH 反向转发上游：127.0.0.1:$reverse_port（config/ports/ssh_reverse.port）"
-    echo '上游必须通向 SOCKS5 代理，不是 SSH 登录端口；ezm 不建立或重连隧道。'
-    echo '仅支持 TCP，不支持 UDP；上游断开时请求失败，不自动回退其他出口。'
+    note "反向转发端口: 127.0.0.1:$reverse_port（仅支持 TCP）。"
   fi
   _mihomo_write_text "$ROOT/config/mode.activate" "$choice"
   note "已保存模式：$choice。未启停代理；运行中需执行 restart 生效。"
@@ -584,34 +579,45 @@ boot_mihomo() {
 }
 
 status_mihomo() {
-  local profile
-  echo "配置模式：$(_mihomo_load_mode "$ROOT" || echo 无效)"
+  local pid mode
   if daemon_alive; then
-    echo "运行模式：$(running_mode)"
-    if [[ "$(running_mode)" == ssh_reverse ]]; then
-      python3 - "$ROOT/runtime/mihomo.json" <<'PY_UPSTREAM'
+    mode="$(running_mode)"
+    if tracked_daemon_alive; then
+      pid="$(tr -d '[:space:]' < "$PIDFILE")"
+    else
+      pid="$(instance_pids)"
+      pid="${pid%%$'\n'*}"
+    fi
+    echo "运行模式: $mode"
+    echo "进程 PID: $pid"
+    python3 - "$ROOT/runtime/mihomo.json" "$pid" "$mode" <<'PY_STATUS'
 import json,sys,subprocess
 try:
     cfg=json.load(open(sys.argv[1]))
-    node=next(n for n in cfg.get('proxies',[]) if n.get('name')=='node' and n.get('type')=='socks5')
-    print(f"运行 SSH 上游：{node['server']}:{node['port']}")
-    # Check the local listener only; it cannot prove the SSH session or remote egress works.
-    listeners=subprocess.run(['ss','-Hlnt'],capture_output=True,text=True,check=True).stdout
-    endpoint=f"127.0.0.1:{node['port']}"
-    listening=any(len(row.split())>3 and row.split()[3]==endpoint for row in listeners.splitlines())
-    print('SSH 上游端口已监听；完整出网能力请运行 test 检查。' if listening else '等待 SSH 上游：本机反向转发端口未监听，当前无法转发。')
-except (OSError,ValueError,KeyError,TypeError,StopIteration,subprocess.SubprocessError):
-    print('运行 SSH 上游配置不可读或已拒绝转发')
-PY_UPSTREAM
-      echo '运行限制：仅支持 TCP，不支持 UDP；隧道断开不会自动回退其他出口。'
-    fi
+    rows=subprocess.run(['ss','-Hlntp'],capture_output=True,text=True,check=True).stdout.splitlines()
+    endpoint=f"{cfg['bind-address']}:{cfg['mixed-port']}"
+    owned=any(len(row.split())>3 and row.split()[3]==endpoint and f"pid={sys.argv[2]}," in row for row in rows)
+    print(f"SOCKS / HTTP 混合代理监听: {endpoint}" + ('' if owned else ' 未在监听'))
+    nodes=cfg.get('proxies',[])
+    node=next((n for n in nodes if n.get('name')=='node'),None)
+    if sys.argv[3]=='ssh_reverse':
+        if node and node.get('type')=='socks5':
+            upstream=f"{node['server']}:{node['port']}"
+            print(f"反向转发端口: {upstream}")
+            listening=any(len(row.split())>3 and row.split()[3]==upstream for row in rows)
+            print('反向转发监听: 已监听' if listening else '反向转发监听: 未监听，等待 SSH 隧道')
+        else:
+            print('反向转发端口: 运行配置不可用，已拒绝转发')
+        print('传输限制: 仅支持 TCP，不支持 UDP。')
+    elif sys.argv[3]=='node':
+        protocol={'ss':'shadowsocks'}.get(node.get('type'),node.get('type')) if node else None
+        print(f"运行线路: {protocol}（bin/mihomo_1.19.33）" if protocol else '运行线路: 无可用节点，已拒绝转发')
+except (OSError,ValueError,KeyError,TypeError,subprocess.SubprocessError):
+    print('运行配置或监听状态不可读')
+PY_STATUS
+  else
+    echo '运行状态: 未运行'
   fi
-  if [[ "$(_mihomo_load_mode "$ROOT" 2>/dev/null || true)" == ssh_reverse ]]; then
-    echo "SSH 反向转发上游：127.0.0.1:$(_mihomo_reverse_port "$ROOT" || echo 无效)"
-    echo '配置文件：config/ports/ssh_reverse.port；隧道由用户建立，仅支持 TCP，不支持 UDP。'
-  fi
-  profile="$(current_profile)"
-  echo "配置线路: ${profile}（$(core_for "$profile")）"
   if cron_enabled; then
     echo "开机自启: 开"
   else
@@ -623,55 +629,19 @@ PY_UPSTREAM
     echo "终端自动接入代理: 关"
   fi
   echo "日志目录: ${ROOT}/log/"
-  if [[ "${PROXY_PORT_DEFAULTED:-0}" == 1 ]]; then
-    echo "代理端口配置缺失、为空或无效，按默认 10808 查询；未写入文件。"
-  fi
-  if [[ "$PORT_CONFIG_VALID" == 0 ]]; then
-    echo "端口配置无效；以下运行配置仅供诊断，未修改文件。"
-  fi
-  if daemon_alive; then
-    python3 - "$ROOT/runtime/mihomo.json" "$PROXY_PORT" "$PORT_CONFIG_VALID" <<'PY_STATUS'
-import json, sys
-try:
-    cfg = json.load(open(sys.argv[1]))
-    actual = (cfg.get('bind-address'), cfg.get('mixed-port'))
-    if sys.argv[3] != '1' or actual != ('127.0.0.1', int(sys.argv[2])):
-        print(f"运行配置入口: SOCKS / HTTP 混合代理 {actual[0]}:{actual[1]}；与当前端口配置不一致")
-except (OSError, ValueError, KeyError, TypeError):
-    print('运行配置不可读')
-PY_STATUS
-  fi
-  [[ "$PORT_CONFIG_VALID" == 1 ]] || return 0
-  if port_open; then
-    local pid cmd
-    if own_listener; then
-      echo "SOCKS / HTTP 混合代理监听: 127.0.0.1:${PORT}"
-    else
-      echo "SOCKS / HTTP 混合代理监听: 127.0.0.1:${PORT} 已被其他进程占用"
-    fi
-    pid="$(listener_pid)"
-    if [[ -n "$pid" && -r "/proc/${pid}/cmdline" ]]; then
-      cmd="$(pid_cmdline "$pid")"
-      if [[ -n "$cmd" ]]; then
-        echo "进程 PID: ${pid}"
-      fi
-    fi
-  else
-    echo "SOCKS / HTTP 混合代理监听: 127.0.0.1:${PORT} 未在监听"
-  fi
 }
 
 usage() {
   cat <<EOF
 用法: $0 <命令>
 
-  start    按 config/mode.activate 启动。已在监听时不重复启动。启动后保持后台运行
+  start    按保存的模式和配置启动。已运行时报告运行模式，不重复启动。启动后保持后台运行
   stop     停止本项目核心及混合代理入口。依赖该代理的程序随即无法经该代理出网
   restart  关闭监听后按保存的模式与协议再启动，然后报告连接是否正常
-  status   查看配置线路、开机自启、终端自动接入代理与监听。不写入日志
-  test     分别测试 HTTP 和 SOCKS 代理，均访问 ${PROBE_URL}，显示连接结果和首字节耗时。不改线路，也不启停监听
+  status   查看运行模式、进程 PID、实际监听、开机自启和终端自动接入设置。不写入日志
+  test     分别测试 HTTP 和 SOCKS 代理，均访问 Google 和百度，分别显示连接结果和首字节耗时。不改线路，也不启停监听
   protocol 选择并保存节点协议，不启停代理；restart 后应用
-  mode     选择并保存 node / ssh_reverse 模式，不启停代理；restart 后应用。SSH 模式仅支持 TCP，不支持 UDP
+  mode     选择并保存 node / ssh_reverse 模式，不启停代理；restart 后应用。ssh_reverse 仅支持 TCP
   boot     询问后开启或关闭开机自启；开启时准备启动依赖。不启动、不停止当前监听
   terminal 询问后开启或关闭新终端自动接入代理。不开启、不关闭监听
   log      菜单查看运行、开机启动和终端自动接入设置日志

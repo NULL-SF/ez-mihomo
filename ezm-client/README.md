@@ -14,9 +14,9 @@
 
 ### 1.1 当前模式与线路
 
-出口模式写在 `config/mode.activate`，可选 `node`（节点代理）或 `ssh_reverse`（SSH 反向出口）；同一时间只运行一种模式。文件缺失或为空时，启动默认使用并写入 `node`；非法模式名报错。使用 `mode` 选择模式，使用 `protocol` 选择节点协议；两个命令只保存选择，不启停服务。服务未运行时执行 `start`，运行中执行 `restart` 应用修改。
+出口模式写在 `config/mode.activate`，可选 `node`（节点代理）或 `ssh_reverse`（SSH 反向代理）；同一时间只运行一种模式。文件缺失或为空时，启动默认使用并写入 `node`；非法模式名报错。使用 `mode` 选择模式，使用 `protocol` 选择节点协议；两个命令只保存选择，不启停服务。服务未运行时执行 `start`，运行中执行 `restart` 应用修改。
 
-节点模式的当前线路写在 `config/protocol.activate`，可选 `vless`、`vmess`、`hysteria2`、`trojan`、`shadowsocks`、`tuic`、`anytls`；同一时间只运行一条。文件缺失或为空时，启动默认使用并写入 `hysteria2`；非法线路名报错，不自动换线路。选择线路使用 `protocol`；修改后，执行 `restart` 生效。SSH 模式不使用节点链接，也不改变保存的节点协议。
+节点模式的当前线路写在 `config/protocol.activate`，可选 `vless`、`vmess`、`hysteria2`、`trojan`、`shadowsocks`、`tuic`、`anytls`；同一时间只运行一条。文件缺失或为空时，启动默认使用并写入 `hysteria2`；非法线路名报错，不自动换线路。选择线路使用 `protocol`；修改后，执行 `restart` 生效。SSH 反向代理模式不使用节点链接，也不改变保存的节点协议。
 
 ### 1.2 节点链接
 
@@ -26,13 +26,55 @@
 
 统一代理端口写在 `config/ports/listening.port`，填写一个 `1–65535` 的整数，默认 `10808`，SOCKS 和 HTTP 共用。新启动服务或执行 `source` 时会检查端口配置：文件缺失、为空或内容无效，就使用默认端口并写回文件，写入时自动创建缺失的目录。修改端口后，重启代理并重新 `source`；单独配置代理地址的程序也需更新端口。
 
-### 1.4 SSH 反向出口
+### 1.4 SSH 反向代理
 
-SSH 反向转发端口写在 `config/ports/ssh_reverse.port`，填写一个 `1–65535` 的整数，默认 `10809`，不能与统一代理端口相同。选择或启动 SSH 模式时，文件缺失、为空或内容无效，就使用默认端口并写回文件；写入时自动创建缺失的目录。`status` 只读取配置，不补建文件。
+`ssh_reverse` 模式通过 SSH 反向隧道使用另一端的网络出网。**本机**指运行 ezm-client 的机器；**SSH 上游连接主机**指主动向本机发起 SSH 连接的机器，例如运行 VS Code / Cursor 并连接本机的电脑。可使用该主机上的代理，也可直接使用该主机的网络。
 
-SSH 模式将混合入口收到的 TCP 请求转给 `127.0.0.1:反向转发端口`。该端口必须通过用户建立的 SSH 反向隧道通向外地电脑的 SOCKS5 代理，**不是 SSH 登录端口（通常为 22）**。ezm-client 显示所用端口，不建立、保活或重连隧道，也不管理 sshd。
+**端口配置**
 
-**SSH 模式仅支持 TCP，不支持 UDP。** 隧道未连接或断开时，入口仍可运行，但请求会失败；不会自动改走直连或节点模式。隧道恢复后，新请求可继续转发。`stop` 只停止 ezm-client，不关闭 SSH 隧道。
+| 位置 | 配置或端口 | 用途 |
+|---|---|---|
+| 本机 | `config/ports/listening.port`，默认 `10808` | 本机程序使用的 ezm-client 混合代理入口。 |
+| 本机 | `config/ports/ssh_reverse.port`，默认 `10809` | SSH 反向转发监听端口，ezm-client 将请求交给它。 |
+| SSH 上游连接主机 | 上游代理端口（可选） | 使用代理软件时，填写支持 SOCKS 的端口；直接出网时无需此端口。 |
+
+`ssh_reverse.port` 填写一个 `1–65535` 的整数，不能与本机的统一代理端口相同，也不是 SSH 登录端口（通常为 `22`）。选择或启动 SSH 反向代理模式时，文件缺失、为空或内容无效，就使用默认值 `10809` 并写回文件；写入时自动创建缺失目录。`status` 只读取配置，不补建文件。
+
+**SSH 上游连接主机：建立 SSH 反向隧道**
+
+以下示例使用端口 `10809`，须与本机的 `config/ports/ssh_reverse.port` 一致。以下两种方式任选其一，均在 SSH 上游连接主机操作；`上游代理端口`、`本机名称`、`本机用户名`、`本机地址` 替换为实际值。`本机名称` 是 SSH 配置中的主机别名，`本机用户名` 是登录本机的 SSH 用户，`本机地址` 是 SSH 上游连接主机连接本机时使用的地址。
+
+方式一，在 SSH 上游连接主机终端执行（Windows 可使用 PowerShell）：
+
+```bash
+ssh -N -R 127.0.0.1:10809:127.0.0.1:上游代理端口 本机用户名@本机地址
+```
+
+若上游主机可直接出网，无需代理软件，命令改为 `ssh -N -R 127.0.0.1:10809 本机用户名@本机地址`，由 SSH 提供 SOCKS 转发。
+
+`-N` 表示只建立隧道，不打开远程终端；保持这条连接运行。指定上游代理时，`-R` 中前一个地址在本机监听，后一个地址由 SSH 上游连接主机连接，两个 `127.0.0.1` 分别指各自的机器。
+
+方式二，在 **SSH 上游连接主机用于连接本机的 SSH 配置**中添加反向转发（Windows 通常为 `%USERPROFILE%\.ssh\config`，Linux / macOS 通常为 `~/.ssh/config`）：
+
+```sshconfig
+Host 本机名称
+    HostName 本机地址
+    User 本机用户名
+    # ...（其他连接配置）
+    RemoteForward 127.0.0.1:10809 127.0.0.1:上游代理端口
+```
+
+若直接使用上游主机的网络，该行只需写 `RemoteForward 127.0.0.1:10809`。
+
+在已有的 `Host` 配置下补充 `RemoteForward` 这一行即可，其他连接配置保持不变。保存后重新建立 SSH 连接，使转发生效。
+
+同一个反向转发端口只能由一条独立 SSH 连接监听。多个编辑器或终端同时连接时，后建立的连接可能提示端口已占用；隧道仍由原连接维持，原连接断开后，其他连接不会自动接管。
+
+**使用限制**
+
+SSH 反向代理仅转发 TCP 流量；即使上游代理支持 UDP，本机也无法通过这条隧道代理 UDP 请求。因此此模式不支持依赖 UDP 的功能，同时明确 UDP 请求不会回退直连。
+
+隧道未连接或断开时，入口仍可运行，但请求会失败，不会自动改走直连或节点模式；隧道恢复后，新请求可继续转发。
 
 ## 2 代理架构
 
@@ -90,7 +132,7 @@ flowchart TB
 
     subgraph OUT["出口模式（二选一）"]
         NODE["node：<br/>远端代理节点"]
-        SSH["ssh_reverse：<br/>SSH 反向转发端口"]
+        SSH["ssh_reverse：<br/>SSH 上游连接主机"]
     end
     MIX --> NODE
     MIX --> SSH
@@ -130,7 +172,7 @@ source ./proxy.env
 | `bash ./client.sh stop` | 核验并停止本项目实际运行的进程，不依赖当前模式、协议或端口配置；使用该代理的连接会断开。 |
 | `bash ./client.sh restart` | 停止服务，再按保存的模式和配置启动，并检查连接。 |
 | `bash ./client.sh mode` | 选择并保存 `node` 或 `ssh_reverse`，不启停服务。 |
-| `bash ./client.sh protocol` | 选择并保存节点协议，不启停服务；SSH 模式下只更新节点协议配置。 |
+| `bash ./client.sh protocol` | 选择并保存节点协议，不启停服务；SSH 反向代理模式下只更新节点协议配置。 |
 
 `stop`、`restart` 会中断现有代理连接，执行前请看文首的 Agent 警告。
 
@@ -138,11 +180,11 @@ source ./proxy.env
 
 | 命令 | 说明 |
 |---|---|
-| `bash ./client.sh status` | 查看配置模式、实际运行模式、节点协议、端口监听、进程 PID、开机自启和终端自动接入设置，不修改配置。 |
-| `bash ./client.sh test` | 分别测试 HTTP 和 SOCKS 代理，均访问 `https://www.google.com`，显示连接结果和首字节耗时；任一代理测试失败，命令返回失败。不改线路，也不启停监听。 |
+| `bash ./client.sh status` | 查看实际运行模式、进程 PID、监听、出站线路或反向转发端口，以及开机自启和终端自动接入设置，不修改配置。 |
+| `bash ./client.sh test` | 分别测试 HTTP 和 SOCKS 代理，均访问 `https://www.google.com` 和 `https://www.baidu.com`，分别显示连接结果和首字节耗时；任一项测试失败，命令返回失败。不改线路，也不启停监听。 |
 | `bash ./client.sh log` | 菜单选择运行、开机启动或终端自动接入设置日志，回车默认全部；按 `Ctrl+C` 退出查看。 |
 
-**端口监听不等于出口可用。** `start` 新启动服务，以及 `restart` 后，都会执行与 `test` 相同的连接检查。请求正常完成且最终返回 HTTP 200 才算成功。节点模式与 SSH 模式使用同一测试标准；SSH 模式的测试只验证 TCP 出网。需要在脚本中用退出码判断联网是否成功时，使用 `test`；`start`、`restart` 的联网检查失败不会自动停止已启动的服务，也不会因此返回失败。
+**端口监听不等于出口可用。** `start` 新启动服务，以及 `restart` 后，都会执行与 `test` 相同的连接检查。每项请求正常完成且最终返回 HTTP 200 才算成功。单个站点失败不代表所有目标都不可达，以各项结果为准。节点模式与 SSH 反向代理模式使用同一测试标准；SSH 反向代理模式的测试只验证 TCP 出网。需要在脚本中用退出码判断联网是否成功时，使用 `test`；`start`、`restart` 的联网检查失败不会自动停止已启动的服务，也不会因此返回失败。
 
 首字节耗时表示响应延迟，不是节点 RTT 或下载速度。请求失败时显示“未测得”，详细原因写入日志。
 
@@ -164,7 +206,7 @@ source ./proxy.env
 | `bash ./client.sh boot` | 选择开启或关闭开机自启，修改当前用户的 crontab，不影响当前服务。 |
 | `bash ./client.sh terminal` | 选择开启或关闭新终端打开时的代理自动接入；不影响已打开的终端，也不启停 ezm-client 服务。 |
 
-开启 `boot` 时，先补齐启动所需依赖并准备 cron，全部成功后才写入当前用户的 crontab。开机时调用 `start`，使用保存的模式；SSH 模式仍需用户从外地电脑建立隧道。
+开启 `boot` 时，先补齐启动所需依赖并准备 cron，全部成功后才写入当前用户的 crontab。开机时调用 `start`，使用保存的模式；SSH 反向代理模式仍需用户从外地电脑建立隧道。
 
 `boot` 控制开机启动服务，`terminal` 控制新终端自动执行 `source`。若服务未启动，新终端的自动接入会报错；启动服务后，在该终端重新 `source` 即可。
 
@@ -196,7 +238,7 @@ source ./proxy.env
 | `config/links/anytls.link` | AnyTLS 节点链接，一行。 | 使用或更换 AnyTLS 时改 |
 | `proxy.env`、`lib/libproxychains4.so` | 当前终端接入代理的脚本和库。 | 不改，按上节命令使用 |
 | `runtime/` | 运行中的配置、`mihomo.pid` 和 `mode.running`，可能含节点凭据；代理运行时需要它。 | 不改；迁移时不需复制旧内容 |
-| `log/mihomo.log` | 运行日志；代理运行时持续写入。 | 用 `log` 查看 |
+| `log/mihomo.log` | 两种模式共用的运行日志，记录启停、配置选择、连接测试及核心错误。 | 用 `log` 查看 |
 | `log/boot.log` | 开机启动时的输出和错误。 | 用 `log` 查看 |
 | `log/terminal.log` | 终端自动接入设置的开启、关闭及设置失败记录。 | 用 `log` 查看 |
 | `config/terminal.on` | 终端自动接入功能的持久标记文件。 | 不改；用 `terminal` 命令设置 |
@@ -374,7 +416,7 @@ chmod +x client.sh scripts/*.sh bin/mihomo_1.19.33
 
 **`ssh_reverse` 模式（可选）**
 
-如需将流量交给 SSH 反向隧道转发，在 `config/mode.activate` 中填写 `ssh_reverse`，并在 `config/ports/ssh_reverse.port` 中填写本机的[反向转发端口](#14-ssh-反向出口)（如 `10809`）。该端口须通过外地电脑建立的隧道通向其 SOCKS5 代理；ezm-client 不建立隧道。此模式不需要填写节点链接，仅支持 TCP。
+如需将流量交给 SSH 反向隧道转发，在 `config/mode.activate` 中填写 `ssh_reverse`，并在 `config/ports/ssh_reverse.port` 中填写本机的反向转发端口（如 `10809`）。SSH 上游连接主机的隧道配置见[1.4 SSH 反向代理](#14-ssh-反向代理)。此模式不需要填写节点链接，仅支持 TCP。
 
 也可执行 `bash ./client.sh mode`，在菜单中输入 `2`、回车，保存为 `ssh_reverse`；该命令只保存选择，不启动服务。模式保存后，无需每次启动都重新选择。
 
@@ -432,7 +474,7 @@ bash ./client.sh terminal
 
 ### 7.2 代理配置
 
-安装 Codex 插件或 CLI 后，打开 `~/.codex/` 目录，`.env` 和 `config.toml` 不保证自动存在：文件不存在就新建，已存在就先备份、再修改原文件。如果设置过 `CODEX_HOME`，改用它指定的目录。以下示例使用端口 `10808`，须与该机器的 `config/ports/listening.port` 一致；使用前确认 ezm-client 混合代理入口已经启动。
+安装 Codex 插件或 CLI 后，打开 `~/.codex/` 目录，`.env` 和 `config.toml` 不保证自动存在：文件不存在就新建，已存在就先备份、再修改原文件。如果设置过 `CODEX_HOME`，改用它指定的目录。以下示例使用端口 `10808`，须与本机的 `config/ports/listening.port` 一致；使用前确认 ezm-client 混合代理入口已经启动。
 
 `~/.codex/.env`：若不存在，新建并写入以下八行；若已存在，将同名变量的值改为以下内容，缺少的变量再补上。每个变量只保留一条，其他原有内容保留。
 
@@ -487,7 +529,7 @@ shell_snapshot = false
 
 ### 8.2 代理配置
 
-以下示例使用端口 `10808`，须与该机器的 `config/ports/listening.port` 一致；使用前确认 ezm-client 混合代理入口已经启动。
+以下示例使用端口 `10808`，须与本机的 `config/ports/listening.port` 一致；使用前确认 ezm-client 混合代理入口已经启动。
 
 `~/.vscode-server/data/Machine/settings.json`（Insiders 预览版通常使用 `~/.vscode-server-insiders/data/Machine/settings.json`；自定义安装目录时以实际路径为准）：若不存在，新建并写入以下配置；若已存在，先备份并保留原有设置，只修改同名项，缺少的项再补上。每个设置只保留一条，不要覆盖整个文件。
 

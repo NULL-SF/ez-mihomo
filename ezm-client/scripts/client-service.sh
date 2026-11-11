@@ -66,7 +66,7 @@ fi
 export MIHOMO_ROOT="$ROOT" MIHOMO_PROFILE="$profile" MIHOMO_PORT="$PROXY_PORT"
 if [[ "$mode" == ssh_reverse ]]; then
   MIHOMO_LINK="$reverse_port"
-  printf '[mihomo] SSH 反向转发上游：127.0.0.1:%s；隧道由用户建立，仅支持 TCP，不支持 UDP；上游须为 SOCKS5 代理。\n' "$reverse_port" >&2
+  printf '[mihomo] 反向转发端口: 127.0.0.1:%s（仅支持 TCP）。\n' "$reverse_port" >&2
 else
   MIHOMO_LINK="$(cat -- "$ROOT/config/links/$profile.link")"
 fi
@@ -102,7 +102,11 @@ fi
 # Credentials are only needed for parsing, not as exported process environment.
 unset MIHOMO_LINK MIHOMO_PROFILE MIHOMO_PORT MIHOMO_ROOT
 _mihomo_write_text "$ROOT/runtime/mode.running" "$mode"
-printf '[mihomo] 启动线路 %s，混合入口 127.0.0.1:%s。\n' "$profile" "$PROXY_PORT" >&2
+if [[ "$mode" == ssh_reverse ]]; then
+  printf '[mihomo] 启动模式 ssh_reverse，混合入口 127.0.0.1:%s。\n' "$PROXY_PORT" >&2
+else
+  printf '[mihomo] 启动线路 %s，混合入口 127.0.0.1:%s。\n' "$profile" "$PROXY_PORT" >&2
+fi
 if [[ "$STARTUP_LOCK" == 1 ]]; then exec 8>&-; fi
 python3 "$ROOT/scripts/permissions.py"
 exec "$CORE" -d "$ROOT/runtime" -f "$CONFIG"
