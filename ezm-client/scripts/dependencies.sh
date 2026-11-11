@@ -78,9 +78,11 @@ client_dependencies() {
   local tools=(flock ps ss ip awk grep sed cat tr seq sleep nohup date mkdir mktemp mv rm)
   local needs_python=1 python_modules=basic
   case "$mode" in
-    stop) tools=(flock ps ss grep sed tr sleep mkdir rm date); needs_python=0 ;;
-    status) tools=(ss grep sed tr) ;;
-    test) tools=(curl awk mkdir date ss grep sed tr) ;;
+    start-check) tools=(flock ps mkdir tr date); needs_python=0 ;;
+    selection) tools=(flock mkdir mktemp mv rm tr date); needs_python=0 ;;
+    stop) tools=(flock ps tr sleep mkdir rm date); needs_python=0 ;;
+    status) tools=(ps ss grep sed tr) ;;
+    test) tools=(ps curl awk mkdir date ss grep sed tr) ;;
     terminal) tools=(flock grep mkdir date rm) ;;
     boot-control) tools=(flock grep mkdir date) ;;
     proxychains) tools=(flock mkdir mktemp mv rm cat) ;;
@@ -103,11 +105,16 @@ client_dependencies() {
     [[ "$mode" != prepare ]] || CLIENT_DEPENDENCIES_PREPARED=1
     return 0
   fi
+  printf '缺少客户端依赖：%s。将尝试通过系统包管理器自动补齐；需要 sudo 权限和可用的软件源网络。\n' "${missing[*]:-cron 服务未运行}" >&2
   client_manager
   client_packages "${tools[@]}"
   [[ "$needs_python" == 0 ]] || client_python_ready "$python_modules" || CLIENT_PACKAGES+=(python3)
   [[ "$needs_install" == 0 ]] || CLIENT_PACKAGES+=(ca-certificates)
-  client_install_packages || return $?
+  client_install_packages || {
+    local install_status=$?
+    echo '依赖补齐失败，当前操作未继续。未认证或无法出网时，请先通过可用软件源或离线方式安装所需依赖。' >&2
+    return "$install_status"
+  }
   [[ "$mode" != boot ]] || client_enable_cron || return $?
   for tool in "${tools[@]}"; do
     command -v "$tool" >/dev/null || { echo "安装后仍缺少 $tool。" >&2; return 1; }

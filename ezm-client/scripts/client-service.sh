@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 读取当前线路，生成 mihomo 配置。无效链接保留监听并拒绝转发。
+# 读取出口模式与对应配置；出口配置不可用时保留监听并拒绝转发。
 set -euo pipefail
 export PYTHONDONTWRITEBYTECODE=1
 # 管理命令及核心使用自身配置，不继承终端的代理与预加载。
@@ -35,25 +35,42 @@ for protocol in vless vmess hysteria2 trojan shadowsocks tuic anytls; do
   [[ -e "$ROOT/config/links/$protocol.link" ]] || : > "$ROOT/config/links/$protocol.link"
 done
 _mihomo_ensure_ports "$ROOT"
-profile="$(tr -d '[:space:]' < "$ACTIVE" 2>/dev/null || true)"
-case "$profile" in
-  '') profile=hysteria2 ;;
-  reality) profile=vless ;;
-  hy2|hysteria) profile=hysteria2 ;;
-  ss) profile=shadowsocks ;;
-  vless|vmess|hysteria2|trojan|shadowsocks|tuic|anytls) ;;
-  *) echo '当前线路名称无效' >&2; exit 1 ;;
-esac
-_mihomo_write_text "$ACTIVE" "$profile"
+mode="$(_mihomo_load_mode "$ROOT")"
+_mihomo_write_text "$ROOT/config/mode.activate" "$mode"
+if [[ "$mode" == ssh_reverse ]]; then
+  reverse_port="$(_mihomo_reverse_port "$ROOT")"
+  [[ "$reverse_port" != "$PROXY_PORT" ]] || { echo 'SSH 转发端口不能与代理入口相同。' >&2; exit 1; }
+  _mihomo_write_text "$ROOT/config/ports/ssh_reverse.port" "$reverse_port"
+  profile=ssh_reverse
+else
+  profile="$(tr -d '[:space:]' < "$ACTIVE" 2>/dev/null || true)"
+  case "$profile" in
+    '') profile=hysteria2 ;;
+    reality) profile=vless ;;
+    hy2|hysteria) profile=hysteria2 ;;
+    ss) profile=shadowsocks ;;
+    vless|vmess|hysteria2|trojan|shadowsocks|tuic|anytls) ;;
+    *) echo '当前线路名称无效' >&2; exit 1 ;;
+  esac
+  _mihomo_write_text "$ACTIVE" "$profile"
+fi
 _mihomo_check_available_ports "$ROOT" "$PROXY_PORT"
 _mihomo_write_text "$ROOT/runtime/mihomo.pid" "$$"
 trap 'rm -f "$ROOT/runtime/mihomo.pid"' EXIT
-for _ in $(seq 1 30); do
-  if ip route show default 2>/dev/null | grep . >/dev/null; then break; fi
-  sleep 1
-done
+if [[ "$mode" == node ]]; then
+  for _ in $(seq 1 30); do
+    if ip route show default 2>/dev/null | grep . >/dev/null; then break; fi
+    sleep 1
+  done
+fi
 export MIHOMO_ROOT="$ROOT" MIHOMO_PROFILE="$profile" MIHOMO_PORT="$PROXY_PORT"
-MIHOMO_LINK="$(cat -- "$ROOT/config/links/$profile.link")";export MIHOMO_LINK
+if [[ "$mode" == ssh_reverse ]]; then
+  MIHOMO_LINK="$reverse_port"
+  printf '[mihomo] SSH 反向转发上游：127.0.0.1:%s；隧道由用户建立，仅支持 TCP，不支持 UDP；上游须为 SOCKS5 代理。\n' "$reverse_port" >&2
+else
+  MIHOMO_LINK="$(cat -- "$ROOT/config/links/$profile.link")"
+fi
+export MIHOMO_LINK
 reject_config() {
   python3 - "$ROOT" "$PROXY_PORT" "$CONFIG" <<'PY'
 import sys,json,os
@@ -63,7 +80,7 @@ from link_config import config
 p=Path(sys.argv[3]);t=p.with_name(p.name+f'.{os.getpid()}.tmp')
 t.write_text(json.dumps(config(None,sys.argv[2]))+'\n');t.chmod(0o600);t.replace(p)
 PY
-  echo '[mihomo] 链接不可用，保留混合入口并拒绝转发。' >&2
+  echo '[mihomo] 出口配置不可用，保留混合入口并拒绝转发。' >&2
 }
 if ! python3 "$ROOT/scripts/link_config.py" "$CONFIG"; then reject_config; fi
 # QUIC outbounds may build their TLS pools before mihomo applies global custom CAs.
@@ -84,6 +101,7 @@ if ! "$CORE" -t -d "$ROOT/runtime" -f "$CONFIG" > "$ROOT/runtime/config-check.lo
 fi
 # Credentials are only needed for parsing, not as exported process environment.
 unset MIHOMO_LINK MIHOMO_PROFILE MIHOMO_PORT MIHOMO_ROOT
+_mihomo_write_text "$ROOT/runtime/mode.running" "$mode"
 printf '[mihomo] 启动线路 %s，混合入口 127.0.0.1:%s。\n' "$profile" "$PROXY_PORT" >&2
 if [[ "$STARTUP_LOCK" == 1 ]]; then exec 8>&-; fi
 python3 "$ROOT/scripts/permissions.py"

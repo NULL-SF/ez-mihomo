@@ -1,4 +1,4 @@
-"""Parse seven share-link formats into mihomo JSON (valid YAML), without logging secrets."""
+"""Build mihomo JSON from seven share-link formats or a local SSH SOCKS5 upstream."""
 import base64, json, os, re, sys, uuid
 from pathlib import Path
 from urllib.parse import parse_qsl, unquote, urlsplit, urlunsplit, urlencode
@@ -383,7 +383,14 @@ def config(node,port):
     return cfg
 
 def main():
-    try:cfg=parse_link(os.environ['MIHOMO_PROFILE'],os.environ['MIHOMO_LINK'],os.environ['MIHOMO_PORT'])
+    try:
+        if os.environ['MIHOMO_PROFILE']=='ssh_reverse':
+            upstream=integer(os.environ['MIHOMO_LINK'],1)
+            if upstream==integer(os.environ['MIHOMO_PORT'],1):raise LinkError('SSH 转发端口不能与代理入口相同')
+            cfg=config({'name':'node','type':'socks5','server':'127.0.0.1','port':upstream,'udp':False},os.environ['MIHOMO_PORT'])
+            # Unsupported UDP must never fall back to a direct connection.
+            cfg['rules']=['NETWORK,UDP,REJECT','MATCH,node']
+        else:cfg=parse_link(os.environ['MIHOMO_PROFILE'],os.environ['MIHOMO_LINK'],os.environ['MIHOMO_PORT'])
     except LinkError as e:print('[mihomo] '+str(e),file=sys.stderr);return 1
     target=Path(sys.argv[1]);tmp=target.with_name(target.name+f'.{os.getpid()}.tmp')
     try:

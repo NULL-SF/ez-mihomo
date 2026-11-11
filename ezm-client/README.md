@@ -2,27 +2,37 @@
 
 > **⚠️ Agent 操作警告：不要切断当前会话正在使用的代理**
 >
-> 执行 `stop`、`restart`、`switch`，或修改当前线路、端口之前，先确认当前 Agent 会话及其他任务是否通过本项目的 SOCKS 或 HTTP 入口联网。连接可能中断；**当前会话依赖该端口或无法确认时，不要在本会话中执行这些操作**。`status`、`test` 只能检查代理本身，不能证明当前会话没有使用它。
+> 执行 `stop`、`restart` 之前，先确认当前 Agent 会话及其他任务是否通过本项目的 SOCKS 或 HTTP 入口联网。连接可能中断；**当前会话依赖该端口或无法确认时，不要在本会话中执行这些操作**。`status`、`test` 只能检查代理本身，不能证明当前会话没有使用它。
 
 ---
 
-本项目由同一个 mihomo 进程在 `127.0.0.1` 提供 SOCKS / HTTP 混合代理入口，同一端口自动识别协议，使用当前选定节点。项目自带 mihomo 1.19.33，仅支持 Linux x86_64。流量从当前节点发出，不配置分流；`ping` 不走此代理。
+本项目由同一个 mihomo 进程在 `127.0.0.1` 提供 SOCKS / HTTP 混合代理入口，同一端口自动识别协议，使用当前选定出口。项目自带 mihomo 1.19.33，仅支持 Linux x86_64。流量从当前节点或 SSH 反向转发上游发出，不配置分流；`ping` 不走此代理。
 
 如需快速部署使用，可直接跳到[迁移与部署](#6-迁移与部署)。
 
 ## 1 基本配置
 
-### 1.1 当前线路
+### 1.1 当前模式与线路
 
-当前线路写在 `config/protocol.activate`，可选 `vless`、`vmess`、`hysteria2`、`trojan`、`shadowsocks`、`tuic`、`anytls`；同一时间只运行一条。文件缺失或为空时，启动默认使用并写入 `hysteria2`；非法线路名报错，不自动换线路。切换线路优先使用 `switch`；手动修改该文件后，执行 `restart` 生效。
+出口模式写在 `config/mode.activate`，可选 `node`（节点代理）或 `ssh_reverse`（SSH 反向出口）；同一时间只运行一种模式。文件缺失或为空时，启动默认使用并写入 `node`；非法模式名报错。使用 `mode` 选择模式，使用 `protocol` 选择节点协议；两个命令只保存选择，不启停服务。服务未运行时执行 `start`，运行中执行 `restart` 应用修改。
+
+节点模式的当前线路写在 `config/protocol.activate`，可选 `vless`、`vmess`、`hysteria2`、`trojan`、`shadowsocks`、`tuic`、`anytls`；同一时间只运行一条。文件缺失或为空时，启动默认使用并写入 `hysteria2`；非法线路名报错，不自动换线路。选择线路使用 `protocol`；修改后，执行 `restart` 生效。SSH 模式不使用节点链接，也不改变保存的节点协议。
 
 ### 1.2 节点链接
 
-节点链接保存在 `config/links/` 下对应线路的 `.link` 文件中。当前线路的链接改完后，需执行 `restart` 才会生效；其他线路的链接在切换到该线路时生效。链接为空、解析失败或核心配置校验失败时，服务仍会监听本机端口，但拒绝转发外部连接。不存在的链接文件会在启动或切换时建成空文件，不会自动填入节点。
+节点链接保存在 `config/links/` 下对应线路的 `.link` 文件中。当前线路的链接改完后，需执行 `restart` 才会生效；其他线路的链接在选择该线路并启动或重启后生效。节点模式下，链接为空、解析失败或核心配置校验失败时，服务仍会监听本机端口，但拒绝转发外部连接。不存在的链接文件会在启动时建成空文件，不会自动填入节点。
 
 ### 1.3 本机端口
 
-统一代理端口写在 `config/listening.port`，填写一个 `1–65535` 的整数，默认 `10808`，SOCKS 和 HTTP 共用。启动或执行 `source` 时都会检查端口配置：文件缺失、为空或内容无效，就使用默认端口并写回文件。修改端口后，重启代理并重新 `source`；单独配置代理地址的程序也需更新端口。
+统一代理端口写在 `config/ports/listening.port`，填写一个 `1–65535` 的整数，默认 `10808`，SOCKS 和 HTTP 共用。新启动服务或执行 `source` 时会检查端口配置：文件缺失、为空或内容无效，就使用默认端口并写回文件，写入时自动创建缺失的目录。修改端口后，重启代理并重新 `source`；单独配置代理地址的程序也需更新端口。
+
+### 1.4 SSH 反向出口
+
+SSH 反向转发端口写在 `config/ports/ssh_reverse.port`，填写一个 `1–65535` 的整数，默认 `10809`，不能与统一代理端口相同。选择或启动 SSH 模式时，文件缺失、为空或内容无效，就使用默认端口并写回文件；写入时自动创建缺失的目录。`status` 只读取配置，不补建文件。
+
+SSH 模式将混合入口收到的 TCP 请求转给 `127.0.0.1:反向转发端口`。该端口必须通过用户建立的 SSH 反向隧道通向外地电脑的 SOCKS5 代理，**不是 SSH 登录端口（通常为 22）**。ezm-client 显示所用端口，不建立、保活或重连隧道，也不管理 sshd。
+
+**SSH 模式仅支持 TCP，不支持 UDP。** 隧道未连接或断开时，入口仍可运行，但请求会失败；不会自动改走直连或节点模式。隧道恢复后，新请求可继续转发。`stop` 只停止 ezm-client，不关闭 SSH 隧道。
 
 ## 2 代理架构
 
@@ -78,7 +88,12 @@ flowchart TB
     PC --> MIX
     PROXYCONFIG --> MIX
 
-    MIX --> NODE["远端代理节点"]
+    subgraph OUT["出口模式（二选一）"]
+        NODE["node：<br/>远端代理节点"]
+        SSH["ssh_reverse：<br/>SSH 反向转发端口"]
+    end
+    MIX --> NODE
+    MIX --> SSH
 
     style SHELL_COLUMN fill:transparent,stroke:transparent
 ```
@@ -111,22 +126,23 @@ source ./proxy.env
 
 | 命令 | 说明 |
 |---|---|
-| `bash ./client.sh start` | 按当前线路在后台启动 SOCKS / HTTP 混合代理入口，并检查连接。服务已运行且入口与配置一致时不重复启动，也不重新加载线路或链接；入口不一致时提示检查。启动后保持后台运行。 |
-| `bash ./client.sh stop` | 停止服务，使用该代理的连接会断开。 |
-| `bash ./client.sh restart` | 停止服务，再按当前线路和配置启动，并检查连接。 |
-| `bash ./client.sh switch` | 选择线路，通过端口预检并停止旧服务后保存选择，再启动服务、检查连接。选择当前线路也会重启；新线路不可用时不会自动退回。 |
+| `bash ./client.sh start` | 按保存的模式和配置在后台启动 SOCKS / HTTP 混合代理入口，并检查连接。服务已运行时只报告已运行及实际运行模式，不重复启动，也不加载配置修改。启动后保持后台运行。 |
+| `bash ./client.sh stop` | 核验并停止本项目实际运行的进程，不依赖当前模式、协议或端口配置；使用该代理的连接会断开。 |
+| `bash ./client.sh restart` | 停止服务，再按保存的模式和配置启动，并检查连接。 |
+| `bash ./client.sh mode` | 选择并保存 `node` 或 `ssh_reverse`，不启停服务。 |
+| `bash ./client.sh protocol` | 选择并保存节点协议，不启停服务；SSH 模式下只更新节点协议配置。 |
 
-`stop`、`restart`、`switch` 会中断现有代理连接，执行前请看文首的 Agent 警告。
+`stop`、`restart` 会中断现有代理连接，执行前请看文首的 Agent 警告。
 
 ### 3.2 状态与连接检查
 
 | 命令 | 说明 |
 |---|---|
-| `bash ./client.sh status` | 查看配置线路、端口监听、进程 PID、开机自启和终端自动接入设置，不修改配置。 |
+| `bash ./client.sh status` | 查看配置模式、实际运行模式、节点协议、端口监听、进程 PID、开机自启和终端自动接入设置，不修改配置。 |
 | `bash ./client.sh test` | 分别测试 HTTP 和 SOCKS 代理，均访问 `https://www.google.com`，显示连接结果和首字节耗时；任一代理测试失败，命令返回失败。不改线路，也不启停监听。 |
 | `bash ./client.sh log` | 菜单选择运行、开机启动或终端自动接入设置日志，回车默认全部；按 `Ctrl+C` 退出查看。 |
 
-**端口监听不等于节点可用。** `start` 新启动服务，以及 `restart`、`switch` 后，都会执行与 `test` 相同的连接检查。请求正常完成且最终返回 HTTP 200 才算成功。七类线路使用同一测试标准。需要在脚本中用退出码判断联网是否成功时，使用 `test`；`start`、`restart`、`switch` 的联网检查失败不会自动停止已启动的服务，也不会因此返回失败。
+**端口监听不等于出口可用。** `start` 新启动服务，以及 `restart` 后，都会执行与 `test` 相同的连接检查。请求正常完成且最终返回 HTTP 200 才算成功。节点模式与 SSH 模式使用同一测试标准；SSH 模式的测试只验证 TCP 出网。需要在脚本中用退出码判断联网是否成功时，使用 `test`；`start`、`restart` 的联网检查失败不会自动停止已启动的服务，也不会因此返回失败。
 
 首字节耗时表示响应延迟，不是节点 RTT 或下载速度。请求失败时显示“未测得”，详细原因写入日志。
 
@@ -148,13 +164,13 @@ source ./proxy.env
 | `bash ./client.sh boot` | 选择开启或关闭开机自启，修改当前用户的 crontab，不影响当前服务。 |
 | `bash ./client.sh terminal` | 选择开启或关闭新终端打开时的代理自动接入；不影响已打开的终端，也不启停 ezm-client 服务。 |
 
-开启 `boot` 时，先补齐启动所需依赖并准备 cron，全部成功后才写入当前用户的 crontab。
+开启 `boot` 时，先补齐启动所需依赖并准备 cron，全部成功后才写入当前用户的 crontab。开机时调用 `start`，使用保存的模式；SSH 模式仍需用户从外地电脑建立隧道。
 
 `boot` 控制开机启动服务，`terminal` 控制新终端自动执行 `source`。若服务未启动，新终端的自动接入会报错；启动服务后，在该终端重新 `source` 即可。
 
 ## 4 项目文件与目录
 
-下表的路径均相对于本项目目录。**一般只需要修改 `config/` 下的端口、当前线路和节点链接**；运行文件及自动生成的文件不要手改。
+下表的路径均相对于本项目目录。**一般只需要修改 `config/` 下的端口、出口模式、节点协议和节点链接**；运行文件及自动生成的文件不要手改。
 
 项目文件由安装用户管理，可直接读写。
 
@@ -167,8 +183,10 @@ source ./proxy.env
 | `scripts/link_config.py` | 节点链接解析和运行配置生成。 | 不改 |
 | `scripts/terminal-env.sh` | 管理脚本和终端代理共用的环境及端口处理函数。 | 不改 |
 | `bin/mihomo_1.19.33` | [MetaCubeX/mihomo v1.19.33 官方发行](https://github.com/MetaCubeX/mihomo/releases/tag/v1.19.33)的核心程序。 | 不改 |
-| `config/listening.port` | 本机 SOCKS / HTTP 统一代理端口。 | 需要换端口时改 |
-| `config/protocol.activate` | 当前线路名：`vless`、`vmess`、`hysteria2`、`trojan`、`shadowsocks`、`tuic` 或 `anytls`。 | 选线路时优先使用 `switch` |
+| `config/mode.activate` | 出口模式：`node` 或 `ssh_reverse`。 | 用 `mode` 命令选择 |
+| `config/ports/ssh_reverse.port` | 本机 SSH 反向转发上游端口，默认 `10809`。 | 需要换上游端口时改 |
+| `config/ports/listening.port` | 本机 SOCKS / HTTP 统一代理端口。 | 需要换端口时改 |
+| `config/protocol.activate` | 当前线路名：`vless`、`vmess`、`hysteria2`、`trojan`、`shadowsocks`、`tuic` 或 `anytls`。 | 用 `protocol` 命令选择 |
 | `config/links/vless.link` | VLESS 节点链接，一行。 | 使用或更换 VLESS 时改 |
 | `config/links/vmess.link` | VMess 节点链接，一行。 | 使用或更换 VMess 时改 |
 | `config/links/hysteria2.link` | Hysteria2 节点链接，一行。 | 使用或更换 Hysteria2 时改 |
@@ -177,7 +195,7 @@ source ./proxy.env
 | `config/links/tuic.link` | TUIC 节点链接，一行。 | 使用或更换 TUIC 时改 |
 | `config/links/anytls.link` | AnyTLS 节点链接，一行。 | 使用或更换 AnyTLS 时改 |
 | `proxy.env`、`lib/libproxychains4.so` | 当前终端接入代理的脚本和库。 | 不改，按上节命令使用 |
-| `runtime/` | 运行中的配置及 `mihomo.pid`，可能含节点凭据；代理运行时需要它。 | 不改；迁移时不需复制旧内容 |
+| `runtime/` | 运行中的配置、`mihomo.pid` 和 `mode.running`，可能含节点凭据；代理运行时需要它。 | 不改；迁移时不需复制旧内容 |
 | `log/mihomo.log` | 运行日志；代理运行时持续写入。 | 用 `log` 查看 |
 | `log/boot.log` | 开机启动时的输出和错误。 | 用 `log` 查看 |
 | `log/terminal.log` | 终端自动接入设置的开启、关闭及设置失败记录。 | 用 `log` 查看 |
@@ -350,11 +368,25 @@ cd ezm-client
 chmod +x client.sh scripts/*.sh bin/mihomo_1.19.33
 ```
 
-将节点链接填写到 `config/links/协议名.link`，至少填好 `config/protocol.activate` 指定的当前线路，其他线路可稍后再填。若使用本项目服务端，可复制其 `output/links/` 中对应协议的 `.link` 文件到客户端的 `config/links/`。确认 `config/listening.port` 后启动服务：
+**`node` 模式（默认）**
+
+将节点链接填写到 `config/links/协议名.link`，至少填好 `config/protocol.activate` 指定的当前线路，其他线路可稍后再填。若使用本项目服务端，可复制其 `output/links/` 中对应协议的 `.link` 文件到客户端的 `config/links/`。`config/mode.activate` 默认是 `node`，无需另选模式。
+
+**`ssh_reverse` 模式（可选）**
+
+如需将流量交给 SSH 反向隧道转发，在 `config/mode.activate` 中填写 `ssh_reverse`，并在 `config/ports/ssh_reverse.port` 中填写本机的[反向转发端口](#14-ssh-反向出口)（如 `10809`）。该端口须通过外地电脑建立的隧道通向其 SOCKS5 代理；ezm-client 不建立隧道。此模式不需要填写节点链接，仅支持 TCP。
+
+也可执行 `bash ./client.sh mode`，在菜单中输入 `2`、回车，保存为 `ssh_reverse`；该命令只保存选择，不启动服务。模式保存后，无需每次启动都重新选择。
+
+**启动服务**
+
+确认 `config/ports/listening.port` 后启动服务，两种模式使用同一个命令：
 
 ```bash
 bash ./client.sh start
 ```
+
+若服务已运行，修改配置后执行 `restart` 生效；重复执行 `start` 不会切换运行模式。两种模式使用相同的终端接入方式。
 
 **开机自启（可选）**
 
@@ -400,9 +432,11 @@ bash ./client.sh terminal
 
 ### 7.2 代理配置
 
-安装插件或 CLI 后，`.env` 和 `config.toml` 不保证自动存在。在服务器终端执行 `mkdir -p ~/.codex`，然后用 VS Code 打开服务器上的 `~/.codex/`：文件不存在就新建，已存在就先备份、再修改原文件。如果设置过 `CODEX_HOME`，改用它指定的目录。下面代码块是**文件内容，不是要在终端执行的命令**。以下示例的 HTTP 和 SOCKS 共用 `10808`，须与 `config/listening.port` 一致；使用前确认 ezm-client 混合代理入口已经启动。
+安装 Codex 插件或 CLI 后，打开 `~/.codex/` 目录，`.env` 和 `config.toml` 不保证自动存在：文件不存在就新建，已存在就先备份、再修改原文件。如果设置过 `CODEX_HOME`，改用它指定的目录。以下示例使用端口 `10808`，须与该机器的 `config/ports/listening.port` 一致；使用前确认 ezm-client 混合代理入口已经启动。
 
 `~/.codex/.env`：若不存在，新建并写入以下八行；若已存在，将同名变量的值改为以下内容，缺少的变量再补上。每个变量只保留一条，其他原有内容保留。
+
+（以下代码块为文件内容，请写入对应文件，不要在终端执行。）
 
 ```dotenv
 HTTP_PROXY=http://127.0.0.1:10808
@@ -444,3 +478,35 @@ shell_snapshot = false
 这段配置从 Codex 执行命令的环境中排除上述八个代理变量（[官方环境策略说明](https://developers.openai.com/codex/config-advanced/#shell-environment-policy)），并关闭可能把它们重新带回的终端快照（关闭快照后命令启动可能稍慢）。其他代理机制（如 `LD_PRELOAD` 或程序自己的代理设置）不由这八个排除项控制。
 
 保存配置后，重启 Codex 以加载新配置。若 Codex 被设置为断开 SSH 后继续运行，重连 SSH 不能代替重启。
+
+## 8 VS Code 适配
+
+### 8.1 安装与运行位置
+
+本节主要处理 Remote SSH 场景下，商城能搜索到插件，但安装到服务器或更新时下载卡住、超时的情况。能搜索到插件不代表服务器能访问插件包的下载地址，见[官方连接要求](https://code.visualstudio.com/docs/remote/ssh#what-are-the-connectivity-requirements-for-the-vs-code-server-when-it-is-running-on-a-remote-machine--vm)。在**需要安装插件的服务器用户**下配置代理，并在该服务器上启动 ezm-client、确认 `test` 通过。
+
+### 8.2 代理配置
+
+以下示例使用端口 `10808`，须与该机器的 `config/ports/listening.port` 一致；使用前确认 ezm-client 混合代理入口已经启动。
+
+`~/.vscode-server/data/Machine/settings.json`（Insiders 预览版通常使用 `~/.vscode-server-insiders/data/Machine/settings.json`；自定义安装目录时以实际路径为准）：若不存在，新建并写入以下配置；若已存在，先备份并保留原有设置，只修改同名项，缺少的项再补上。每个设置只保留一条，不要覆盖整个文件。
+
+（以下代码块为文件内容，请写入对应文件，不要在终端执行。）
+
+```json
+{
+  "http.useLocalProxyConfiguration": false,
+  "http.proxy": "http://127.0.0.1:10808"
+}
+```
+
+这里的 `127.0.0.1` 指该服务器。设置用于让支持 VS Code 代理配置的服务器侧请求使用 ezm-client，见[官方远程代理说明](https://code.visualstudio.com/docs/remote/troubleshooting#extensions-fail-to-connect-to-the-internet-when-installed-remotely)。终端中执行 `source ./proxy.env` 不会代替这些设置。
+
+保存配置后，先保存工作，再通过命令面板（`F1` 或 `Ctrl+Shift+P`）依次操作：
+
+1. 执行 `Remote-SSH: Kill Current VS Code Server`（Remote-SSH：终止当前 VS Code 服务器），停止当前后台进程；会中断相关远程会话和终端。
+2. 若未自动重连，执行 `Developer: Reload Window`（开发人员：重新加载窗口），或手动重新连接该服务器。
+
+确保 VS Code Server 已重新启动后，再安装或更新插件；无需重启服务器系统。仅执行 Reload 不保证后台进程已重启。
+
+VS Code 中集成的 Copilot 聊天也支持使用上述 `http.proxy` 设置指定的 HTTP 代理，配置方式见[GitHub 官方说明](https://docs.github.com/en/copilot/how-tos/copilot-in-your-ide/set-up-copilot/configure-network-settings?tool=vscode)。插件安装完成后，可发送消息确认聊天连接是否正常；其他插件的联网配置以各自说明为准。

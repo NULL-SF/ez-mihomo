@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# 管理 127.0.0.1 上的 SOCKS / HTTP 混合入口，端口见 config/listening.port。
-# 七种线路均使用 bin/mihomo_1.19.33。当前线路见 config/protocol.activate。
+# 管理 127.0.0.1 上的 SOCKS / HTTP 混合入口，端口见 config/ports/listening.port。
+# node 与 ssh_reverse 共用 mihomo；模式见 config/mode.activate，节点协议见 config/protocol.activate。
 # 开机自启写在该用户的 crontab，到点执行 client.sh start，统一走启动准备。
 # 运行操作写入 log/mihomo.log，终端自动接入设置写入 log/terminal.log。询问与 status 只显示在终端。
 set -euo pipefail
@@ -22,7 +22,9 @@ client_restore_access() {
 }
 trap client_restore_access EXIT
 case "${1:-}" in
-  start|restart|switch) client_dependencies prepare ;;
+  start) client_dependencies start-check ;;
+  restart) client_dependencies stop ;;
+  protocol|mode) client_dependencies selection ;;
   stop) client_dependencies stop ;;
   status|test|terminal|log) client_dependencies "$1" ;;
   boot) client_dependencies boot-control ;;
@@ -46,7 +48,7 @@ load_port() {
 PORT_CONFIG_VALID=1
 PORT_CONFIG_NEEDED=0
 case "${1:-}" in
-  start|stop|restart|switch|status|test|__write_proxychains)
+  status|test|__write_proxychains)
     PORT_CONFIG_NEEDED=1
     if ! load_port; then
       case "${1:-}" in
@@ -81,7 +83,7 @@ sync_proxychains() {
   local tmp_config
   tmp_config="$(mktemp "${ROOT}/runtime/.proxychains.conf.XXXXXX")" || return 1
   if ! cat > "$tmp_config" <<EOF
-# 由 client.sh 根据 config/listening.port 生成到 runtime。不要手改。
+# 由 client.sh 根据 config/ports/listening.port 生成到 runtime。不要手改。
 # 仅在 source proxy.env 之后生效。
 strict_chain
 proxy_dns
@@ -145,7 +147,7 @@ listener_pid() {
   ss -lntp 2>/dev/null | sed -n "s/.*127\\.0\\.0\\.1:${PORT} .*pid=\\([0-9]*\\).*/\\1/p" | sed -n '1p'
 }
 
-daemon_alive() {
+tracked_daemon_alive() {
   local pid cmd
   [[ -f "$PIDFILE" ]] || return 1
   pid="$(tr -d '[:space:]' < "$PIDFILE")"
@@ -156,6 +158,10 @@ daemon_alive() {
     [[ "/proc/$pid/exe" -ef "/proc/$$/exe" ]] &&
       [[ "$cmd" == *" ${ROOT}/scripts/client-service.sh "* ]]
   }
+}
+
+daemon_alive() {
+  tracked_daemon_alive || [[ -n "$(instance_pids)" ]]
 }
 
 pid_cmdline() {
@@ -223,25 +229,20 @@ set_cron() (
 )
 
 start_proxy() {
-  client_dependencies prepare || return $?
-  client_platform || return $?
   lock_management || return $?
-  ensure_port || return $?
   FRESH_START=0
-  if port_open; then
-    if ! own_listener; then
-      note "启动失败：127.0.0.1:${PORT} 已由其他进程占用。请先在 config/listening.port 设置空闲端口。"
-      return 1
-    fi
-    FRESH_START=0
-    _mihomo_check_running_ports "$ROOT" "$PROXY_PORT" || return 1
-    sync_proxychains || return 1
-    note "混合代理入口已在监听，未重复启动。"
+  if daemon_alive; then
+    note "代理已运行。运行模式：$(running_mode)"
     return 0
   fi
-  if daemon_alive; then
-    note "核心进程已在运行，127.0.0.1:${PORT} 尚未监听。详见 ${LOG}"
-    return 1
+  client_dependencies prepare || return $?
+  client_platform || return $?
+  ensure_port || return $?
+  local selected reverse_port
+  selected="$(_mihomo_load_mode "$ROOT")" || return 1
+  if [[ "$selected" == ssh_reverse ]]; then
+    reverse_port="$(_mihomo_reverse_port "$ROOT")" || return 1
+    [[ "$reverse_port" != "$PORT" ]] || { note 'SSH 转发端口不能与代理入口相同。'; return 1; }
   fi
   _mihomo_check_available_ports "$ROOT" "$PROXY_PORT" || return 1
   # 核心不能持有管理锁，否则后续 stop/restart 会一直等待。
@@ -258,7 +259,10 @@ start_proxy() {
         note "启动失败：混合代理入口被其他进程占用。"
         return 1
       fi
-      note "已启动。线路 $(current_profile)（$(core_for "$(current_profile)")），监听 127.0.0.1:${PROXY_PORT}（SOCKS / HTTP 混合代理）。"
+      note "已启动。模式 $(running_mode)，监听 127.0.0.1:${PROXY_PORT}（SOCKS / HTTP 混合代理）。"
+      if [[ "$selected" == ssh_reverse ]]; then
+        note "SSH 反向转发上游：127.0.0.1:$reverse_port（config/ports/ssh_reverse.port）；隧道由用户建立，仅支持 TCP，不支持 UDP。"
+      fi
       sync_proxychains || return 1
       FRESH_START=1
       return 0
@@ -277,28 +281,37 @@ start_proxy() {
   return 1
 }
 
-# 只结束本项目的进程；配置端口上的其他进程不属于停止范围。
+# Locate only this installation's actual core, independent of editable configuration.
+instance_pids() {
+  local pid args
+  while read -r pid args; do
+    if [[ "$args" == "${ROOT}/bin/mihomo_1.19.33 -d ${ROOT}/runtime -f ${ROOT}/runtime/mihomo.json" ]]; then
+      [[ "$(pid_cmdline "$pid")" == "$args " ]] && printf '%s\n' "$pid"
+    fi
+  done < <(ps -ww -eo pid=,args=)
+  return 0
+}
+
+# Stop actual processes belonging to this installation, never a configured port.
 stop_proxy() {
   client_dependencies stop || return $?
   lock_management || return $?
-  local pid attempt
-  if daemon_alive; then
+  local pid attempt remaining
+  if tracked_daemon_alive; then
     pid="$(tr -d '[:space:]' < "$PIDFILE")"
     kill_tree "$pid"
   fi
-  if own_listener; then
-    pid="$(listener_pid)"
-    kill_tree "$pid"
-  fi
+  for pid in $(instance_pids); do kill_tree "$pid"; done
   for attempt in {1..30}; do
-    if ! daemon_alive && ! own_listener; then
-      rm -f "$PIDFILE"
+    remaining="$(instance_pids)"
+    if ! daemon_alive && [[ -z "$remaining" ]]; then
+      rm -f "$PIDFILE" "$ROOT/runtime/mode.running"
       note "本项目核心已停止。"
       return 0
     fi
     sleep 0.1
   done
-  note "停止失败：本项目进程或监听尚未退出。"
+  note "停止失败：本项目进程尚未退出。"
   return 1
 }
 
@@ -309,6 +322,9 @@ PROBE_URL="https://www.google.com"
 report_connection() {
   local kind label port url result code secs ms
   local failed=0 entry_failed
+  if daemon_alive && [[ "$(running_mode)" == ssh_reverse ]]; then
+    echo '当前运行 ssh_reverse：仅支持 TCP，不支持 UDP；以下测试只验证 HTTP / SOCKS 的 TCP 出网。'
+  fi
   local urls=() proxy_args=()
   for kind in http socks; do
     if [[ "$kind" == http ]]; then
@@ -360,8 +376,42 @@ report_connection() {
   return "$failed"
 }
 
-switch_mihomo() {
-  local current choice previous
+running_mode() {
+  local value=未知
+  if [[ -r "$ROOT/runtime/mode.running" ]]; then
+    value="$(tr -d '[:space:]' < "$ROOT/runtime/mode.running")"
+  fi
+  case "$value" in node|ssh_reverse) echo "$value" ;; *) echo 未知 ;; esac
+}
+
+select_mode() {
+  local choice
+  echo "配置模式：$(_mihomo_load_mode "$ROOT")"
+  echo '  1) node'
+  echo '  2) ssh_reverse（仅支持 TCP，不支持 UDP；需自行建立 SSH 反向隧道）'
+  printf '输入序号或模式名：'
+  read -r choice || { echo '已取消，未作更改。'; return 0; }
+  case "$choice" in
+    1|node) choice=node ;;
+    2|ssh_reverse) choice=ssh_reverse ;;
+    *) echo '已取消，未作更改。'; return 1 ;;
+  esac
+  lock_management
+  mkdir -p "$ROOT/config"
+  if [[ "$choice" == ssh_reverse ]]; then
+    local reverse_port
+    reverse_port="$(_mihomo_reverse_port "$ROOT")" || return 1
+    _mihomo_write_text "$ROOT/config/ports/ssh_reverse.port" "$reverse_port"
+    echo "SSH 反向转发上游：127.0.0.1:$reverse_port（config/ports/ssh_reverse.port）"
+    echo '上游必须通向 SOCKS5 代理，不是 SSH 登录端口；ezm 不建立或重连隧道。'
+    echo '仅支持 TCP，不支持 UDP；上游断开时请求失败，不自动回退其他出口。'
+  fi
+  _mihomo_write_text "$ROOT/config/mode.activate" "$choice"
+  note "已保存模式：$choice。未启停代理；运行中需执行 restart 生效。"
+}
+
+select_protocol() {
+  local current choice
   current="$(current_profile)"
   echo "当前配置线路: ${current}（$(core_for "$current")）"
   echo "  1) vless"
@@ -386,30 +436,10 @@ switch_mihomo() {
       return 1
       ;;
   esac
-  client_dependencies prepare
   lock_management
-  ensure_port
-  _mihomo_check_available_ports "$ROOT" "$PROXY_PORT" || return 1
-  current="$(current_profile)"
-  if [[ "$choice" == "$current" ]]; then
-    note "当前已是 ${current}，按重启处理。"
-    stop_proxy
-    start_proxy
-    report_connection || true
-    return
-  fi
-  previous="$current"
-  if ! stop_proxy; then
-    note "未能停止当前进程，未切换，线路仍为 ${previous}。"
-    return 1
-  fi
+  mkdir -p "$ROOT/config"
   _mihomo_write_text "$ACTIVE" "$choice"
-  if ! start_proxy; then
-    note "已切换到 ${choice}，并已写入 config/protocol.activate。监听未能启动，详见 ${LOG}"
-    return 1
-  fi
-  note "已切换到 ${choice}。已写入 config/protocol.activate，此后启动与开机使用该线路。"
-  report_connection || true
+  note "已保存节点协议：${choice}。未启停代理；运行中需执行 restart 生效。"
 }
 
 terminal_enabled() {
@@ -555,6 +585,31 @@ boot_mihomo() {
 
 status_mihomo() {
   local profile
+  echo "配置模式：$(_mihomo_load_mode "$ROOT" || echo 无效)"
+  if daemon_alive; then
+    echo "运行模式：$(running_mode)"
+    if [[ "$(running_mode)" == ssh_reverse ]]; then
+      python3 - "$ROOT/runtime/mihomo.json" <<'PY_UPSTREAM'
+import json,sys,subprocess
+try:
+    cfg=json.load(open(sys.argv[1]))
+    node=next(n for n in cfg.get('proxies',[]) if n.get('name')=='node' and n.get('type')=='socks5')
+    print(f"运行 SSH 上游：{node['server']}:{node['port']}")
+    # Check the local listener only; it cannot prove the SSH session or remote egress works.
+    listeners=subprocess.run(['ss','-Hlnt'],capture_output=True,text=True,check=True).stdout
+    endpoint=f"127.0.0.1:{node['port']}"
+    listening=any(len(row.split())>3 and row.split()[3]==endpoint for row in listeners.splitlines())
+    print('SSH 上游端口已监听；完整出网能力请运行 test 检查。' if listening else '等待 SSH 上游：本机反向转发端口未监听，当前无法转发。')
+except (OSError,ValueError,KeyError,TypeError,StopIteration,subprocess.SubprocessError):
+    print('运行 SSH 上游配置不可读或已拒绝转发')
+PY_UPSTREAM
+      echo '运行限制：仅支持 TCP，不支持 UDP；隧道断开不会自动回退其他出口。'
+    fi
+  fi
+  if [[ "$(_mihomo_load_mode "$ROOT" 2>/dev/null || true)" == ssh_reverse ]]; then
+    echo "SSH 反向转发上游：127.0.0.1:$(_mihomo_reverse_port "$ROOT" || echo 无效)"
+    echo '配置文件：config/ports/ssh_reverse.port；隧道由用户建立，仅支持 TCP，不支持 UDP。'
+  fi
   profile="$(current_profile)"
   echo "配置线路: ${profile}（$(core_for "$profile")）"
   if cron_enabled; then
@@ -610,12 +665,13 @@ usage() {
   cat <<EOF
 用法: $0 <命令>
 
-  start    按 config/protocol.activate 启动。已在监听时不重复启动。启动后保持后台运行
+  start    按 config/mode.activate 启动。已在监听时不重复启动。启动后保持后台运行
   stop     停止本项目核心及混合代理入口。依赖该代理的程序随即无法经该代理出网
-  restart  关闭监听后按 config/protocol.activate 再启动，然后报告连接是否正常
+  restart  关闭监听后按保存的模式与协议再启动，然后报告连接是否正常
   status   查看配置线路、开机自启、终端自动接入代理与监听。不写入日志
   test     分别测试 HTTP 和 SOCKS 代理，均访问 ${PROBE_URL}，显示连接结果和首字节耗时。不改线路，也不启停监听
-  switch   询问后切换 vless / hysteria2 / vmess / trojan / shadowsocks / tuic / anytls 并保留。选中当前线路时按重启处理。监听起来后报告连接是否正常
+  protocol 选择并保存节点协议，不启停代理；restart 后应用
+  mode     选择并保存 node / ssh_reverse 模式，不启停代理；restart 后应用。SSH 模式仅支持 TCP，不支持 UDP
   boot     询问后开启或关闭开机自启；开启时准备启动依赖。不启动、不停止当前监听
   terminal 询问后开启或关闭新终端自动接入代理。不开启、不关闭监听
   log      菜单查看运行、开机启动和终端自动接入设置日志
@@ -642,7 +698,8 @@ main() {
       report_connection || true
       ;;
     test) report_connection ;;
-    switch) switch_mihomo ;;
+    protocol) select_protocol ;;
+    mode) select_mode ;;
     boot) boot_mihomo ;;
     terminal) terminal_mihomo ;;
     status) status_mihomo ;;

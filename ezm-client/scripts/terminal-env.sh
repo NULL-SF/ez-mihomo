@@ -23,11 +23,20 @@ _mihomo_remove_preload() {
   return 0
 }
 
+# Port files live exclusively under config/ports; read-only lookup never creates directories.
+_mihomo_port_file() {
+  local root="$1" name="$2" directory="$1/config/ports"
+  if [[ -e "$root/config" && ! -d "$root/config" ]] || [[ -e "$directory" && ! -d "$directory" ]]; then
+    echo '端口配置路径必须是目录：config/ports' >&2; return 1
+  fi
+  printf '%s\n' "$directory/$name.port"
+}
+
 # 只读加载统一端口；缺失、空白或非法时回退，状态查询不写文件。
 _mihomo_load_ports() {
   local root="$1" value="" file
   PROXY_PORT_DEFAULTED=0
-  file="$root/config/listening.port"
+  file="$(_mihomo_port_file "$root" listening)" || return 1
   if [[ -e "$file" && ( ! -f "$file" || ! -r "$file" ) ]]; then
     printf '端口配置不是可读的普通文件：%s\n' "$file" >&2
     return 1
@@ -45,24 +54,24 @@ _mihomo_load_ports() {
 # 启动/切换/终端接入时保存默认回退值；有效配置保持不变。
 _mihomo_write_text() {
   local file="$1" value="$2" temporary
+  if [[ -e "$file" && ! -f "$file" ]]; then
+    printf '配置目标不是普通文件：%s\n' "$file" >&2
+    return 1
+  fi
+  mkdir -p "${file%/*}" || return 1
   temporary=$(mktemp "${file}.XXXXXX") || return 1
-  if ! printf '%s\n' "$value" > "$temporary" || ! mv -f -- "$temporary" "$file"; then
+  if ! printf '%s\n' "$value" > "$temporary" || ! mv -fT -- "$temporary" "$file"; then
     rm -f -- "$temporary"
     return 1
   fi
 }
 
 _mihomo_ensure_ports() {
-  local root="$1" temporary
+  local root="$1"
   _mihomo_load_ports "$root" || return 1
   if [[ "$PROXY_PORT_DEFAULTED" == 1 ]]; then
-    mkdir -p "$root/config" || return 1
-    temporary=$(mktemp "$root/config/.port.XXXXXX") || return 1
-    if ! printf '%s\n' "$PROXY_PORT" > "$temporary" || ! mv -f -- "$temporary" "$root/config/listening.port"; then
-      rm -f -- "$temporary"
-      return 1
-    fi
-    printf '统一代理端口已写入 config/listening.port：%s。\n' "$PROXY_PORT" >&2
+    _mihomo_write_text "$root/config/ports/listening.port" "$PROXY_PORT" || return 1
+    printf '统一代理端口已写入 config/ports/listening.port：%s。\n' "$PROXY_PORT" >&2
   fi
 }
 
@@ -151,4 +160,35 @@ if __name__ == '__main__':
         print(f'代理入口检查失败：{error}', file=sys.stderr)
         sys.exit(1)
 PY_PORT_CHECK
+}
+
+# Read-only mode loading; persist only during explicit selection or startup.
+_mihomo_load_mode() {
+  local file="$1/config/mode.activate" value=""
+  if [[ -e "$file" && ( ! -f "$file" || ! -r "$file" ) ]]; then
+    echo "模式配置不是可读普通文件：$file" >&2; return 1
+  fi
+  [[ ! -r "$file" ]] || value="$(tr -d '[:space:]' < "$file")"
+  case "$value" in
+    '') value=node ;;
+    node|ssh_reverse) ;;
+    *) echo '模式配置无效，应为 node 或 ssh_reverse。' >&2; return 1 ;;
+  esac
+  printf '%s\n' "$value"
+}
+
+_mihomo_reverse_port() {
+  local file value=""
+  file="$(_mihomo_port_file "$1" ssh_reverse)" || return 1
+  if [[ -e "$file" && ( ! -f "$file" || ! -r "$file" ) ]]; then
+    echo "SSH 端口配置不是可读普通文件：$file" >&2; return 1
+  fi
+  [[ ! -r "$file" ]] || value=$(<"$file")
+  value="${value#"${value%%[![:space:]]*}"}"
+  value="${value%"${value##*[![:space:]]}"}"
+  if [[ ! "$value" =~ ^[0-9]{1,5}$ ]] || ((10#$value < 1 || 10#$value > 65535)); then
+    echo 'SSH 反向转发端口缺失、为空或无效，使用默认 10809。' >&2
+    value=10809
+  fi
+  printf '%s\n' "$((10#$value))"
 }
